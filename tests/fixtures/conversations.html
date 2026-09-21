@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChatGPT Conversation Fixture</title>
+</head>
+<body>
+  <!-- Header with Model Selector -->
+  <header>
+    <button data-testid="model-switcher-dropdown" aria-haspopup="menu">
+      <span class="text-token-text-secondary">GPT-4o</span>
+    </button>
+  </header>
+
+  <!-- Main Conversation Stream -->
+  <main role="presentation">
+    <div class="flex-1 overflow-hidden">
+      <!-- Turn 1: User Text Message -->
+      <article data-testid="conversation-turn-1" data-message-author-role="user">
+        <div class="whitespace-pre-wrap">
+          Can you write a Python function to calculate Fibonacci numbers and analyze its time complexity?
+        </div>
+        <div class="toolbar">
+          <button data-testid="edit-button">Edit</button>
+        </div>
+      </article>
+
+      <!-- Turn 2: Assistant Response with Code and Markdown -->
+      <article data-testid="conversation-turn-2" data-message-author-role="assistant">
+        <div class="markdown prose">
+          <p>Here is an optimized Python function using memoization:</p>
+          <pre><code class="language-python">def fibonacci(n: int, memo={}) -> int:
+    if n in memo:
+        return memo[n]
+    if n <= 1:
+        return n
+    memo[n] = fibonacci(n - 1, memo) + fibonacci(n - 2, memo)
+    return memo[n]</code></pre>
+          <h3>Complexity Analysis</h3>
+          <table>
+            <thead>
+              <tr><th>Approach</th><th>Time Complexity</th><th>Space Complexity</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Naive Recursive</td><td>O(2^n)</td><td>O(n)</td></tr>
+              <tr><td>Memoized Dynamic</td><td>O(n)</td><td>O(n)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="toolbar">
+          <button data-testid="copy-turn-action-button">Copy</button>
+          <button data-testid="thumbs-up">Helpful</button>
+        </div>
+      </article>
+
+      <!-- Turn 3: User with Uploaded Document and Image -->
+      <article data-testid="conversation-turn-3" data-message-author-role="user">
+        <div class="file-attachment" data-testid="file-attachment">
+          <span class="font-semibold">financial_report_q3.csv</span>
+          <span>(42.5 KB)</span>
+        </div>
+        <img alt="Uploaded image chart.png" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==">
+        <div class="whitespace-pre-wrap">
+          Please review the attached spreadsheet and chart.
+        </div>
+      </article>
+
+      <!-- Turn 4: Assistant with Web Search Citations -->
+      <article data-testid="conversation-turn-4" data-message-author-role="assistant">
+        <button aria-label="Searched 3 sites" class="search-pill">
+          Searched 3 sites for latest inflation benchmarks
+        </button>
+        <div class="markdown prose">
+          <p>Based on the latest macroeconomic data and your CSV file, revenue growth has exceeded inflation estimates.</p>
+        </div>
+      </article>
+    </div>
+  </main>
+</body>
+</html>

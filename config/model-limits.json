@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "lastUpdated": "2026-09-21",
+  "models": {
+    "gpt-4o": {
+      "displayName": "GPT-4o",
+      "aliases": ["gpt-4o", "4o", "chatgpt-4o", "omni"],
+      "contextWindow": 128000,
+      "maxOutput": 16384,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o)",
+      "lastVerified": "2026-09-20",
+      "notes": "Flagship multimodal model with 128k token context window."
+    },
+    "gpt-4o-mini": {
+      "displayName": "GPT-4o mini",
+      "aliases": ["gpt-4o-mini", "4o-mini", "chatgpt-4o-mini"],
+      "contextWindow": 128000,
+      "maxOutput": 16384,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o-mini)",
+      "lastVerified": "2026-09-20",
+      "notes": "Fast, cost-efficient model with 128k context window."
+    },
+    "gpt-4.5": {
+      "displayName": "GPT-4.5",
+      "aliases": ["gpt-4.5", "gpt-4.5-preview", "4.5"],
+      "contextWindow": 128000,
+      "maxOutput": 16384,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-5-preview)",
+      "lastVerified": "2026-09-20",
+      "notes": "Large scale flagship model with 128k context window."
+    },
+    "o1": {
+      "displayName": "o1",
+      "aliases": ["o1", "o1-full", "openai-o1", "reasoning"],
+      "contextWindow": 200000,
+      "maxOutput": 100000,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1)",
+      "lastVerified": "2026-09-20",
+      "notes": "Advanced reasoning model with 200k context window and up to 100k reasoning/output tokens."
+    },
+    "o1-mini": {
+      "displayName": "o1-mini",
+      "aliases": ["o1-mini", "openai-o1-mini"],
+      "contextWindow": 128000,
+      "maxOutput": 65536,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-mini)",
+      "lastVerified": "2026-09-20",
+      "notes": "Faster reasoning model with 128k context window."
+    },
+    "o1-preview": {
+      "displayName": "o1-preview",
+      "aliases": ["o1-preview", "openai-o1-preview"],
+      "contextWindow": 128000,
+      "maxOutput": 32768,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-preview)",
+      "lastVerified": "2026-09-20",
+      "notes": "Initial reasoning preview model with 128k context window."
+    },
+    "o3-mini": {
+      "displayName": "o3-mini",
+      "aliases": ["o3-mini", "openai-o3-mini", "o3"],
+      "contextWindow": 200000,
+      "maxOutput": 100000,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o3-mini)",
+      "lastVerified": "2026-09-20",
+      "notes": "High-efficiency reasoning model with 200k context window."
+    },
+    "gpt-4-turbo": {
+      "displayName": "GPT-4 Turbo",
+      "aliases": ["gpt-4-turbo", "gpt-4-turbo-preview", "turbo"],
+      "contextWindow": 128000,
+      "maxOutput": 4096,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-turbo-and-gpt-4)",
+      "lastVerified": "2026-09-20",
+      "notes": "128k context window with 4k max output."
+    },
+    "gpt-4": {
+      "displayName": "GPT-4 (Legacy)",
+      "aliases": ["gpt-4", "gpt-4-0613", "gpt-4-classic"],
+      "contextWindow": 8192,
+      "maxOutput": 4096,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4)",
+      "lastVerified": "2026-09-20",
+      "notes": "Original GPT-4 with 8,192 token context window."
+    },
+    "gpt-3.5-turbo": {
+      "displayName": "GPT-3.5 Turbo",
+      "aliases": ["gpt-3.5", "gpt-3.5-turbo", "3.5"],
+      "contextWindow": 16385,
+      "maxOutput": 4096,
+      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-3-5-turbo)",
+      "lastVerified": "2026-09-20",
+      "notes": "16k context window legacy model."
+    }
+  },
+  "productDisclaimers": {
+    "apiVsProduct": "Model limits listed reflect the underlying OpenAI model context window. ChatGPT Web product interfaces may enforce dynamic conversation turn caps, subscription tier limits, or internal system overhead not exposed in the client.",
+    "freeTierLimits": "ChatGPT Free tier message limits are dynamic and managed server-side by OpenAI without a fixed client-side constant. Counters are never fabricated.",
+    "unknownModelFallback": {
+      "displayName": "Unknown Model",
+      "contextWindow": null,
+      "maxOutput": null,
+      "source": "Unrecognized or custom model identifier",
+      "lastVerified": null
+    }
+  }
+}

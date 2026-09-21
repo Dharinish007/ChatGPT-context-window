@@ -1,0 +1,99 @@
+{
+  "version": "1.0.0",
+  "selectors": {
+    "conversationContainer": [
+      "main [role='presentation']",
+      "main .flex-1.overflow-hidden",
+      "main div[class*='react-scroll-to-bottom']",
+      "main div[tabindex='0']",
+      "main"
+    ],
+    "conversationTurns": [
+      "article[data-testid^='conversation-turn-']",
+      "article",
+      "div[data-message-author-role]",
+      ".conversation-turn",
+      "[data-testid^='conversation-turn']"
+    ],
+    "authorRole": {
+      "attribute": "data-message-author-role",
+      "userPointers": [
+        "[data-message-author-role='user']",
+        "[data-testid='user-message']",
+        ".user-message",
+        "[data-message-model-slug='user']"
+      ],
+      "assistantPointers": [
+        "[data-message-author-role='assistant']",
+        "[data-testid='assistant-message']",
+        ".agent-turn",
+        "[data-message-model-slug]"
+      ]
+    },
+    "messageContent": [
+      ".markdown",
+      ".whitespace-pre-wrap",
+      "[data-message-author-role] .text-base",
+      "div[class*='prose']",
+      ".min-h-[20px]"
+    ],
+    "codeBlocks": [
+      "pre code",
+      "pre",
+      "code[class*='language-']"
+    ],
+    "streaming": [
+      ".result-streaming",
+      "button[aria-label*='Stop generating']",
+      "button[aria-label*='Stop streaming']",
+      "[data-testid='stop-button']",
+      ".cursor-pointer[aria-label*='Stop']",
+      "span[class*='result-thinking']"
+    ],
+    "modelSelector": [
+      "button[data-testid='model-switcher-dropdown']",
+      "button[aria-haspopup='menu'][data-testid*='model']",
+      "button span.text-token-text-secondary",
+      "header button[class*='text-token-text-primary']",
+      "header div[class*='font-semibold']",
+      "[data-testid='model-selector']"
+    ],
+    "attachments": [
+      "[data-testid='attachment-thumbnail']",
+      "[data-testid='file-attachment']",
+      "div[class*='file-pill']",
+      "div[class*='file-attachment']",
+      "img[alt*='Uploaded image']",
+      "div[role='button'][aria-label*='File']"
+    ],
+    "tools": {
+      "webSearch": [
+        "button[aria-label*='Searched']",
+        "div[class*='search-pill']",
+        "[data-testid='web-search-citations']",
+        "button[class*='search-citation']"
+      ],
+      "codeInterpreter": [
+        "div[data-testid='code-execution']",
+        "div[class*='code-interpreter']",
+        "button[aria-label*='Ran Python']",
+        "button[aria-label*='Finished analyzing']"
+      ],
+      "memory": [
+        "div[data-testid='memory-updated']",
+        "button[aria-label*='Memory updated']",
+        "button[aria-label*='Memory accessed']"
+      ],
+      "canvas": [
+        "[data-testid='canvas-container']",
+        "button[aria-label*='Open canvas']",
+        "div[class*='canvas-preview']"
+      ],
+      "apps": [
+        "[data-testid='mcp-tool-pill']",
+        "[data-testid='connected-app-pill']",
+        "button[aria-label*='Used tool']"
+      ]
+    }
+  }
+}
