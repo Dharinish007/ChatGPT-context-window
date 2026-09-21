@@ -1,0 +1,23 @@
+{
+  "name": "chatgpt-context-monitor",
+  "version": "1.0.0",
+  "description": "Production-grade Chrome Extension for ChatGPT Web that calculates and displays verified context-window utilization without fabricating hidden server data.",
+  "main": "background/service-worker.js",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js && node scripts/generate-icons.js",
+    "test": "node tests/run-tests.js",
+    "validate": "node scripts/validate-extension.js",
+    "pack": "node scripts/package-extension.js"
+  },
+  "keywords": [
+    "chatgpt",
+    "context-window",
+    "token-counter",
+    "chrome-extension",
+    "manifest-v3",
+    "ai"
+  ],
+  "author": "ChatGPT Context Monitor Team",
+  "license": "MIT"
+}
