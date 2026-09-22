@@ -1232,6 +1232,391 @@ class ContextCalculator {
 }
 
 
+  // --- Network Layer ---
+  /**
+ * ChatGPT Context Monitor - Request & Network Observer Module
+ * 
+ * Runs in the isolated content script world.
+ * Bridges communication with the MAIN-world network interceptor via window.postMessage,
+ * normalizes live network streaming events, tracks network layer health,
+ * and feeds observable network evidence into the context pipeline.
+ * 
+ * Rules:
+ * - Supplements, never replaces, Authoritative Conversation API & DOM
+ * - Every network-derived value records provenance: { source: "network", evidenceType: "OBSERVED" }
+ * - Graceful fallback: complete isolation from network failures or schema mutations
+ * - Zero capture or persistence of auth tokens, session cookies, or credentials
+ */
+
+class RequestObserver {
+  /**
+   * @param {Object} options
+   * @param {Function} [options.onStreamChunk] - Callback fired on streaming updates
+   * @param {Function} [options.onStreamComplete] - Callback fired when stream finishes
+   * @param {Function} [options.onPromptSent] - Callback fired when user submits a message
+   * @param {Function} [options.onConversationLoaded] - Callback fired when conversation JSON is loaded
+   */
+  constructor(options = {}) {
+    this.onStreamChunk = options.onStreamChunk || null;
+    this.onStreamComplete = options.onStreamComplete || null;
+    this.onPromptSent = options.onPromptSent || null;
+    this.onConversationLoaded = options.onConversationLoaded || null;
+
+    // Network Health Tracking
+    this.networkAvailable = false;
+    this.lastEventTimestamp = null;
+    this.interceptionErrors = 0;
+    this.errorLog = [];
+    this.unsupportedEndpoints = new Set();
+    this.activeStreamsCount = 0;
+
+    // Normalized Network Evidence State
+    this.activeConversationId = null;
+    this.observedModel = null; // { value: string, source: 'network', evidenceType: 'OBSERVED' }
+    this.pendingUserTurn = null; // { id, role: 'user', parts, text, source: 'network', evidenceType: 'OBSERVED' }
+    this.activeStreamingTurn = null; // { id, role: 'assistant', parts, text, isStreaming: true, ... }
+    this.observedTools = new Map(); // toolName -> { name, status, source: 'network', evidenceType: 'OBSERVED' }
+
+    this._messageListener = (event) => this.handleMessage(event);
+    this._isListening = false;
+  }
+
+  /**
+   * Starts listening to MAIN-world bridge messages and sends a ping handshake.
+   */
+  start() {
+    if (this._isListening || typeof window === 'undefined') return;
+
+    window.addEventListener('message', this._messageListener);
+    this._isListening = true;
+
+    // Send handshake ping to MAIN world
+    try {
+      window.postMessage({
+        source: 'CHATGPT_CONTEXT_MONITOR_ISOLATED',
+        type: 'PING',
+        timestamp: Date.now()
+      }, '*');
+    } catch (_) {}
+  }
+
+  /**
+   * Stops listening to bridge messages and cleans up.
+   */
+  stop() {
+    if (!this._isListening || typeof window === 'undefined') return;
+
+    window.removeEventListener('message', this._messageListener);
+    this._isListening = false;
+  }
+
+  /**
+   * Handles incoming messages from MAIN-world interceptor.
+   * @param {MessageEvent} event 
+   */
+  handleMessage(event) {
+    if (event.source !== window) return;
+
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.source !== 'CHATGPT_CONTEXT_MONITOR_NET') return;
+
+    this.networkAvailable = true;
+    this.lastEventTimestamp = data.timestamp || Date.now();
+
+    const eventType = data.eventType;
+    const payload = data.payload || {};
+
+    try {
+      switch (eventType) {
+        case 'INTERCEPTOR_READY':
+          this.networkAvailable = true;
+          break;
+
+        case 'CONVERSATION_REQUEST':
+          this._handleConversationRequest(payload);
+          break;
+
+        case 'STREAM_STARTED':
+          this.activeStreamsCount++;
+          if (payload.conversationId) {
+            this.activeConversationId = payload.conversationId;
+          }
+          if (payload.model) {
+            this.observedModel = {
+              value: payload.model,
+              source: 'network',
+              evidenceType: 'OBSERVED',
+              timestamp: Date.now()
+            };
+          }
+          break;
+
+        case 'STREAM_CHUNK':
+          this._handleStreamChunk(payload);
+          break;
+
+        case 'TOOL_INVOKED':
+          this._handleToolInvoked(payload);
+          break;
+
+        case 'GENERATION_DONE':
+        case 'STREAM_COMPLETED':
+          this._handleStreamCompleted(payload);
+          break;
+
+        case 'STREAM_ABORTED':
+          this.activeStreamsCount = Math.max(0, this.activeStreamsCount - 1);
+          if (this.activeStreamingTurn) {
+            this.activeStreamingTurn.isStreaming = false;
+            this.activeStreamingTurn.status = 'aborted';
+          }
+          break;
+
+        case 'CONVERSATION_LOADED':
+          if (payload.conversationId) {
+            this.activeConversationId = payload.conversationId;
+          }
+          if (payload.modelSlug) {
+            this.observedModel = {
+              value: payload.modelSlug,
+              source: 'network',
+              evidenceType: 'OBSERVED',
+              timestamp: Date.now()
+            };
+          }
+          if (typeof this.onConversationLoaded === 'function') {
+            this.onConversationLoaded(payload);
+          }
+          break;
+
+        case 'MODELS_OBSERVED':
+          // Array of model slugs available on ChatGPT Web
+          break;
+
+        case 'UNSUPPORTED_ENDPOINT_OBSERVED':
+          if (payload.endpoint) {
+            this.unsupportedEndpoints.add(payload.endpoint);
+          }
+          break;
+
+        case 'INTERCEPTION_ERROR':
+        case 'ENDPOINT_STATUS_ERROR':
+          this.interceptionErrors++;
+          if (payload.error || payload.status) {
+            this.errorLog.push({
+              type: payload.type || 'ERROR',
+              endpoint: payload.endpoint || 'unknown',
+              details: payload.error || `Status ${payload.status}`,
+              timestamp: Date.now()
+            });
+            // Keep error log bounded
+            if (this.errorLog.length > 20) {
+              this.errorLog.shift();
+            }
+          }
+          break;
+
+        default:
+          break;
+      }
+    } catch (err) {
+      this.interceptionErrors++;
+      console.warn('[ChatGPT Context Monitor] Failed to process network event:', err);
+    }
+  }
+
+  /**
+   * Normalizes outgoing prompt request data.
+   * @param {Object} payload 
+   * @private
+   */
+  _handleConversationRequest(payload) {
+    if (payload.conversationId) {
+      this.activeConversationId = payload.conversationId;
+    }
+
+    if (payload.model) {
+      this.observedModel = {
+        value: payload.model,
+        source: 'network',
+        evidenceType: 'OBSERVED',
+        timestamp: Date.now()
+      };
+    }
+
+    if (payload.userMessage) {
+      this.pendingUserTurn = {
+        id: payload.userMessage.id,
+        role: 'user',
+        parts: payload.userMessage.parts || [{ type: 'text', text: payload.userMessage.text }],
+        text: payload.userMessage.text || '',
+        contentType: payload.userMessage.contentType || 'text',
+        source: 'network',
+        evidenceType: 'OBSERVED'
+      };
+
+      if (typeof this.onPromptSent === 'function') {
+        this.onPromptSent(this.pendingUserTurn);
+      }
+    }
+  }
+
+  /**
+   * Normalizes live SSE stream chunks into the active streaming assistant turn.
+   * @param {Object} payload 
+   * @private
+   */
+  _handleStreamChunk(payload) {
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    const messageId = payload.messageId || 'net-stream-' + (payload.streamId || 'active');
+
+    this.activeStreamingTurn = {
+      id: messageId,
+      role: payload.role || 'assistant',
+      parts: [{ type: 'text', text }],
+      text,
+      status: payload.status || 'in_progress',
+      isStreaming: payload.status !== 'finished_successfully',
+      modelSlug: payload.modelSlug || (this.observedModel ? this.observedModel.value : null),
+      source: 'network',
+      evidenceType: 'OBSERVED'
+    };
+
+    if (payload.modelSlug && (!this.observedModel || this.observedModel.value !== payload.modelSlug)) {
+      this.observedModel = {
+        value: payload.modelSlug,
+        source: 'network',
+        evidenceType: 'OBSERVED',
+        timestamp: Date.now()
+      };
+    }
+
+    if (typeof this.onStreamChunk === 'function') {
+      this.onStreamChunk(this.activeStreamingTurn);
+    }
+  }
+
+  /**
+   * Normalizes tool execution events observed in stream.
+   * @param {Object} payload 
+   * @private
+   */
+  _handleToolInvoked(payload) {
+    if (!payload.toolName) return;
+
+    this.observedTools.set(payload.toolName, {
+      name: payload.toolName,
+      status: 'invoked',
+      source: 'network',
+      evidenceType: 'OBSERVED',
+      timestamp: Date.now()
+    });
+  }
+
+  /**
+   * Normalizes stream completion.
+   * @param {Object} payload 
+   * @private
+   */
+  _handleStreamCompleted(payload) {
+    this.activeStreamsCount = Math.max(0, this.activeStreamsCount - 1);
+
+    if (this.activeStreamingTurn) {
+      this.activeStreamingTurn.isStreaming = false;
+      this.activeStreamingTurn.status = 'finished_successfully';
+    }
+
+    // Clear pending user turn once generation is done
+    const completedTurn = this.activeStreamingTurn;
+
+    if (typeof this.onStreamComplete === 'function') {
+      this.onStreamComplete({
+        conversationId: payload.conversationId || this.activeConversationId,
+        turn: completedTurn,
+        tools: Array.from(this.observedTools.values())
+      });
+    }
+  }
+
+  /**
+   * Resets active streaming and in-flight state (e.g. upon conversation switch).
+   */
+  resetActiveStream() {
+    this.activeStreamingTurn = null;
+    this.pendingUserTurn = null;
+    this.observedTools.clear();
+    this.activeStreamsCount = 0;
+  }
+
+  /**
+   * Sets active conversation ID and flushes in-flight turns if ID changed.
+   * @param {string|null} id 
+   */
+  setActiveConversationId(id) {
+    if (id !== this.activeConversationId) {
+      this.activeConversationId = id;
+      this.resetActiveStream();
+    }
+  }
+
+  /**
+   * Returns current network health snapshot.
+   * @returns {Object}
+   */
+  getHealth() {
+    return {
+      networkAvailable: this.networkAvailable,
+      lastEventTimestamp: this.lastEventTimestamp,
+      interceptionErrors: this.interceptionErrors,
+      activeStreamsCount: this.activeStreamsCount,
+      unsupportedEndpoints: Array.from(this.unsupportedEndpoints),
+      errorCount: this.interceptionErrors
+    };
+  }
+
+  /**
+   * Returns currently observed active model with provenance, or null.
+   * @returns {{ value: string, source: string, evidenceType: string }|null}
+   */
+  getObservedModel() {
+    return this.observedModel;
+  }
+
+  /**
+   * Returns in-flight pending user message, or null.
+   * @returns {Object|null}
+   */
+  getPendingUserTurn() {
+    return this.pendingUserTurn;
+  }
+
+  /**
+   * Returns active streaming assistant message, or null.
+   * @returns {Object|null}
+   */
+  getStreamingTurn() {
+    return this.activeStreamingTurn;
+  }
+
+  /**
+   * Returns array of observed tools with provenance.
+   * @returns {Array<Object>}
+   */
+  getObservedTools() {
+    return Array.from(this.observedTools.values());
+  }
+
+  /**
+   * Returns active conversation ID if captured via network.
+   * @returns {string|null}
+   */
+  getActiveConversationId() {
+    return this.activeConversationId;
+  }
+}
+
+
   // --- Content & DOM Adapters ---
   /**
  * ChatGPT Context Monitor - Authoritative Conversation Client
@@ -1267,7 +1652,7 @@ class ConversationClient {
    * @returns {string|null}
    */
   extractConversationId(urlString) {
-    const url = urlString || (typeof window !== 'undefined' ? window.location.href : '');
+    const url = urlString || (typeof window !== 'undefined' && window.location ? window.location.href : '');
     if (!url) return null;
 
     try {
@@ -2592,6 +2977,7 @@ class ChatGPTDOMObserver {
 
 
 
+
 class ContentScriptCoordinator {
   constructor(modelLimitsDb) {
     this.tokenizer = new Tokenizer();
@@ -2604,6 +2990,15 @@ class ContentScriptCoordinator {
     this.domObserver = null;
     this.latestState = null;
     this.activeConversationId = null;
+    this._streamRafId = null;
+
+    // Network Intelligence Observer (Group C)
+    this.requestObserver = new RequestObserver({
+      onStreamChunk: (turn) => this.handleStreamingChunk(turn),
+      onStreamComplete: (meta) => this.handleStreamComplete(meta),
+      onPromptSent: (userTurn) => this.handlePromptSent(userTurn),
+      onConversationLoaded: (meta) => this.handleConversationLoaded(meta)
+    });
   }
 
   /**
@@ -2620,6 +3015,9 @@ class ContentScriptCoordinator {
       onChange: (event) => this.handleDOMChange(event)
     });
     this.domObserver.start();
+
+    // Start Network Intelligence observer (Group C)
+    this.requestObserver.start();
 
     // Listen for requests from extension action popup or background service worker
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
@@ -2643,28 +3041,92 @@ class ContentScriptCoordinator {
   }
 
   /**
-   * Main analysis pass executed on DOM mutations.
-   * Prioritizes authoritative conversation structure from backend API with DOM fallback.
+   * Throttled handler for live streaming chunk updates from Network.
+   * @param {Object} turn 
+   */
+  handleStreamingChunk(turn) {
+    if (this._streamRafId) return;
+    this._streamRafId = requestAnimationFrame(() => {
+      this._streamRafId = null;
+      this.handleDOMChange({ isStreamProgress: true });
+    });
+  }
+
+  /**
+   * Handler for completed stream generation.
+   * Triggers authoritative fetch to pull finalized conversation tree.
+   * @param {Object} meta 
+   */
+  async handleStreamComplete(meta = {}) {
+    const convId = meta.conversationId || this.activeConversationId;
+    if (convId) {
+      await this.conversationClient.fetchConversation(convId, { bypassCache: true });
+    }
+    this.handleDOMChange({ isStreamComplete: true });
+  }
+
+  /**
+   * Handler for user prompt submission captured via network.
+   * @param {Object} userTurn 
+   */
+  handlePromptSent(userTurn) {
+    this.handleDOMChange({ isPromptSent: true });
+  }
+
+  /**
+   * Handler for conversation loaded event captured via network.
+   * @param {Object} meta 
+   */
+  handleConversationLoaded(meta = {}) {
+    if (meta.conversationId && meta.conversationId !== this.activeConversationId) {
+      this.activeConversationId = meta.conversationId;
+      this.requestObserver.setActiveConversationId(meta.conversationId);
+    }
+    this.handleDOMChange({ isConversationLoaded: true });
+  }
+
+  /**
+   * Main analysis pass executed on DOM mutations or network stream events.
+   * Integrates Authoritative Conversation API + Network Stream + DOM into a unified pipeline.
+   * 
+   * Pipeline:
+   *   Authoritative Conversation API (GET /backend-api/conversation/{id})
+   *          +
+   *   Network Stream (POST /backend-api/conversation SSE)
+   *          +
+   *   DOM (Fallback & Real-time corroboration)
+   *          ↓
+   *   Existing Context Pipeline
+   * 
    * @param {Object} event 
    */
   async handleDOMChange(event = {}) {
     try {
-      // 1. Identify active conversation ID and handle navigation
-      const conversationId = this.conversationClient.extractConversationId();
+      // 1. Identify active conversation ID from URL or Network, and handle navigation
+      const conversationId = this.conversationClient.extractConversationId() || this.requestObserver.getActiveConversationId();
       const isNewConversation = conversationId !== this.activeConversationId;
 
       if (event.isNavigation || isNewConversation) {
         this.tokenizer.clearCache();
         if (isNewConversation) {
           this.activeConversationId = conversationId;
+          this.requestObserver.setActiveConversationId(conversationId);
         }
       }
 
-      // 2. Extract DOM messages (used as fallback and for real-time streaming updates)
+      // 2. Extract DOM messages (used as base fallback and for real-time corroboration)
       const rawDomMessages = this.messageExtractor.extractMessages(document);
 
-      // 3. Detect model specifications from DOM as fallback
-      let model = this.modelDetector.detect(document);
+      // 3. Detect model specifications with provenance
+      let model = null;
+      let modelProvenance = { source: 'dom', evidenceType: 'OBSERVED' };
+
+      // Priority A: Network observed model from live request/SSE stream
+      const netModel = this.requestObserver.getObservedModel();
+      if (netModel && netModel.value) {
+        model = this.modelDetector.resolveModel(netModel.value);
+        modelProvenance = { source: 'network', evidenceType: 'OBSERVED' };
+      }
 
       // 4. Primary: Retrieve authoritative conversation structure from backend API
       let effectiveMessages = rawDomMessages;
@@ -2687,22 +3149,10 @@ class ContentScriptCoordinator {
               effectiveAttachments = normalized.attachments;
             }
 
-            // Prioritize authoritative model slug if detected
+            // Priority B: Authoritative model slug
             if (normalized.modelSlug) {
               model = this.modelDetector.resolveModel(normalized.modelSlug);
-            }
-
-            // Real-time streaming merge:
-            // If the user has an active streaming turn in the DOM, append/update it
-            // so HUD shows live progress while model is generating.
-            const streamingDomTurn = rawDomMessages.find(m => m.isStreaming);
-            if (streamingDomTurn) {
-              const lastEff = effectiveMessages[effectiveMessages.length - 1];
-              if (lastEff && lastEff.role === streamingDomTurn.role && lastEff.id === streamingDomTurn.id) {
-                effectiveMessages[effectiveMessages.length - 1] = streamingDomTurn;
-              } else {
-                effectiveMessages.push(streamingDomTurn);
-              }
+              modelProvenance = { source: 'authoritative', evidenceType: 'OBSERVED' };
             }
           }
         } else {
@@ -2711,9 +3161,71 @@ class ContentScriptCoordinator {
         }
       }
 
+      // Priority C: DOM header switcher fallback if still unresolved
+      if (!model) {
+        model = this.modelDetector.detect(document);
+        modelProvenance = { source: 'dom', evidenceType: 'OBSERVED' };
+      }
+
+      // 5. Supplement with in-flight Network evidence
+      // 5a. In-flight User Prompt (observed immediately on POST before API or DOM settles)
+      const pendingUserTurn = this.requestObserver.getPendingUserTurn();
+      if (pendingUserTurn) {
+        const alreadyExists = effectiveMessages.some(m => 
+          m.id === pendingUserTurn.id || 
+          (m.role === 'user' && m.text && m.text === pendingUserTurn.text)
+        );
+        if (!alreadyExists) {
+          effectiveMessages.push(pendingUserTurn);
+        }
+      }
+
+      // 5b. Live Streaming Assistant Turn (from Network SSE stream or DOM)
+      const netStreamingTurn = this.requestObserver.getStreamingTurn();
+      const domStreamingTurn = rawDomMessages.find(m => m.isStreaming);
+
+      let activeStreamingTurn = null;
+      if (netStreamingTurn && netStreamingTurn.isStreaming) {
+        activeStreamingTurn = netStreamingTurn;
+        // If DOM has longer text, prefer the longer text without duplicating
+        if (domStreamingTurn && domStreamingTurn.text && domStreamingTurn.text.length > activeStreamingTurn.text.length) {
+          activeStreamingTurn = {
+            ...activeStreamingTurn,
+            text: domStreamingTurn.text,
+            parts: [{ type: 'text', text: domStreamingTurn.text }],
+            source: 'dom'
+          };
+        }
+      } else if (domStreamingTurn) {
+        activeStreamingTurn = domStreamingTurn;
+      }
+
+      if (activeStreamingTurn) {
+        // Prevent duplicate messages: update in-place if ID or streaming slot exists
+        const existingIndex = effectiveMessages.findIndex(m => m.id === activeStreamingTurn.id);
+        if (existingIndex !== -1) {
+          effectiveMessages[existingIndex] = {
+            ...effectiveMessages[existingIndex],
+            ...activeStreamingTurn,
+            isStreaming: true
+          };
+        } else {
+          const lastEff = effectiveMessages[effectiveMessages.length - 1];
+          if (lastEff && lastEff.role === activeStreamingTurn.role && (lastEff.id === activeStreamingTurn.id || lastEff.isStreaming)) {
+            effectiveMessages[effectiveMessages.length - 1] = {
+              ...lastEff,
+              ...activeStreamingTurn,
+              isStreaming: true
+            };
+          } else {
+            effectiveMessages.push(activeStreamingTurn);
+          }
+        }
+      }
+
       const encoding = model?.encoding || 'o200k_base';
 
-      // 5. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
+      // 6. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
       const tokenizedMessages = effectiveMessages.map(msg => {
         const parts = msg.parts || [{ type: 'text', text: msg.text }];
         const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, encoding);
@@ -2727,10 +3239,28 @@ class ContentScriptCoordinator {
         };
       });
 
-      // 6. Detect tools, search, memory, and MCP
-      const tools = this.toolDetector.detect(document);
+      // 7. Detect tools from both DOM and Network
+      const domTools = this.toolDetector.detect(document);
+      const netTools = this.requestObserver.getObservedTools();
+      const combinedToolList = [...(domTools.list || [])];
 
-      // 7. Calculate context metrics
+      for (const nt of netTools) {
+        if (!combinedToolList.some(t => t.type === nt.name || t.label?.toLowerCase() === nt.name.toLowerCase())) {
+          combinedToolList.push({
+            type: nt.name,
+            label: nt.name === 'web_search' ? 'Web Search' : nt.name,
+            source: 'network',
+            evidenceType: 'OBSERVED'
+          });
+        }
+      }
+
+      const tools = {
+        observed: domTools.observed || netTools.length > 0,
+        list: combinedToolList
+      };
+
+      // 8. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
@@ -2743,21 +3273,44 @@ class ContentScriptCoordinator {
         isPartial: false
       });
 
-      // Attach authoritative observables
+      // Attach authoritative & network observables
+      const networkHealth = this.requestObserver.getHealth();
       contextState.observables.dataSource = dataSource;
       contextState.observables.conversationId = conversationId;
       contextState.observables.domMessagesCount = rawDomMessages.length;
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
+      contextState.observables.network = networkHealth;
+
       if (apiError) {
         contextState.observables.apiError = apiError;
       }
 
+      // 9. Stamped Epistemic Evidence Model (Task 13)
+      contextState.evidence = {
+        dataSource: {
+          value: dataSource,
+          source: dataSource === 'authoritative' ? 'authoritative_api' : (dataSource === 'dom_fallback' ? 'dom_fallback' : 'dom'),
+          evidenceType: dataSource === 'authoritative' ? 'EXACT' : 'OBSERVED'
+        },
+        model: {
+          value: model.id,
+          source: modelProvenance.source,
+          evidenceType: 'OBSERVED'
+        },
+        networkHealth: {
+          value: networkHealth.networkAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
+          source: 'network',
+          evidenceType: 'OBSERVED',
+          details: networkHealth
+        }
+      };
+
       this.latestState = contextState;
 
-      // 8. Update in-page floating HUD
+      // 10. Update in-page floating HUD
       this.overlayUI.update(contextState);
 
-      // 9. Sync state to chrome.storage.session and background service worker
+      // 11. Sync state to chrome.storage.session and background service worker
       this.syncState(contextState);
 
     } catch (err) {

@@ -14,6 +14,7 @@ import { ToolDetector } from './tool-detector.js';
 import { OverlayUI } from './overlay-ui.js';
 import { ConversationClient } from './conversation-client.js';
 import { ChatGPTDOMObserver } from './chatgpt-dom.js';
+import { RequestObserver } from '../network/request-observer.js';
 
 export class ContentScriptCoordinator {
   constructor(modelLimitsDb) {
@@ -27,6 +28,15 @@ export class ContentScriptCoordinator {
     this.domObserver = null;
     this.latestState = null;
     this.activeConversationId = null;
+    this._streamRafId = null;
+
+    // Network Intelligence Observer (Group C)
+    this.requestObserver = new RequestObserver({
+      onStreamChunk: (turn) => this.handleStreamingChunk(turn),
+      onStreamComplete: (meta) => this.handleStreamComplete(meta),
+      onPromptSent: (userTurn) => this.handlePromptSent(userTurn),
+      onConversationLoaded: (meta) => this.handleConversationLoaded(meta)
+    });
   }
 
   /**
@@ -43,6 +53,9 @@ export class ContentScriptCoordinator {
       onChange: (event) => this.handleDOMChange(event)
     });
     this.domObserver.start();
+
+    // Start Network Intelligence observer (Group C)
+    this.requestObserver.start();
 
     // Listen for requests from extension action popup or background service worker
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
@@ -66,28 +79,92 @@ export class ContentScriptCoordinator {
   }
 
   /**
-   * Main analysis pass executed on DOM mutations.
-   * Prioritizes authoritative conversation structure from backend API with DOM fallback.
+   * Throttled handler for live streaming chunk updates from Network.
+   * @param {Object} turn 
+   */
+  handleStreamingChunk(turn) {
+    if (this._streamRafId) return;
+    this._streamRafId = requestAnimationFrame(() => {
+      this._streamRafId = null;
+      this.handleDOMChange({ isStreamProgress: true });
+    });
+  }
+
+  /**
+   * Handler for completed stream generation.
+   * Triggers authoritative fetch to pull finalized conversation tree.
+   * @param {Object} meta 
+   */
+  async handleStreamComplete(meta = {}) {
+    const convId = meta.conversationId || this.activeConversationId;
+    if (convId) {
+      await this.conversationClient.fetchConversation(convId, { bypassCache: true });
+    }
+    this.handleDOMChange({ isStreamComplete: true });
+  }
+
+  /**
+   * Handler for user prompt submission captured via network.
+   * @param {Object} userTurn 
+   */
+  handlePromptSent(userTurn) {
+    this.handleDOMChange({ isPromptSent: true });
+  }
+
+  /**
+   * Handler for conversation loaded event captured via network.
+   * @param {Object} meta 
+   */
+  handleConversationLoaded(meta = {}) {
+    if (meta.conversationId && meta.conversationId !== this.activeConversationId) {
+      this.activeConversationId = meta.conversationId;
+      this.requestObserver.setActiveConversationId(meta.conversationId);
+    }
+    this.handleDOMChange({ isConversationLoaded: true });
+  }
+
+  /**
+   * Main analysis pass executed on DOM mutations or network stream events.
+   * Integrates Authoritative Conversation API + Network Stream + DOM into a unified pipeline.
+   * 
+   * Pipeline:
+   *   Authoritative Conversation API (GET /backend-api/conversation/{id})
+   *          +
+   *   Network Stream (POST /backend-api/conversation SSE)
+   *          +
+   *   DOM (Fallback & Real-time corroboration)
+   *          ↓
+   *   Existing Context Pipeline
+   * 
    * @param {Object} event 
    */
   async handleDOMChange(event = {}) {
     try {
-      // 1. Identify active conversation ID and handle navigation
-      const conversationId = this.conversationClient.extractConversationId();
+      // 1. Identify active conversation ID from URL or Network, and handle navigation
+      const conversationId = this.conversationClient.extractConversationId() || this.requestObserver.getActiveConversationId();
       const isNewConversation = conversationId !== this.activeConversationId;
 
       if (event.isNavigation || isNewConversation) {
         this.tokenizer.clearCache();
         if (isNewConversation) {
           this.activeConversationId = conversationId;
+          this.requestObserver.setActiveConversationId(conversationId);
         }
       }
 
-      // 2. Extract DOM messages (used as fallback and for real-time streaming updates)
+      // 2. Extract DOM messages (used as base fallback and for real-time corroboration)
       const rawDomMessages = this.messageExtractor.extractMessages(document);
 
-      // 3. Detect model specifications from DOM as fallback
-      let model = this.modelDetector.detect(document);
+      // 3. Detect model specifications with provenance
+      let model = null;
+      let modelProvenance = { source: 'dom', evidenceType: 'OBSERVED' };
+
+      // Priority A: Network observed model from live request/SSE stream
+      const netModel = this.requestObserver.getObservedModel();
+      if (netModel && netModel.value) {
+        model = this.modelDetector.resolveModel(netModel.value);
+        modelProvenance = { source: 'network', evidenceType: 'OBSERVED' };
+      }
 
       // 4. Primary: Retrieve authoritative conversation structure from backend API
       let effectiveMessages = rawDomMessages;
@@ -110,22 +187,10 @@ export class ContentScriptCoordinator {
               effectiveAttachments = normalized.attachments;
             }
 
-            // Prioritize authoritative model slug if detected
+            // Priority B: Authoritative model slug
             if (normalized.modelSlug) {
               model = this.modelDetector.resolveModel(normalized.modelSlug);
-            }
-
-            // Real-time streaming merge:
-            // If the user has an active streaming turn in the DOM, append/update it
-            // so HUD shows live progress while model is generating.
-            const streamingDomTurn = rawDomMessages.find(m => m.isStreaming);
-            if (streamingDomTurn) {
-              const lastEff = effectiveMessages[effectiveMessages.length - 1];
-              if (lastEff && lastEff.role === streamingDomTurn.role && lastEff.id === streamingDomTurn.id) {
-                effectiveMessages[effectiveMessages.length - 1] = streamingDomTurn;
-              } else {
-                effectiveMessages.push(streamingDomTurn);
-              }
+              modelProvenance = { source: 'authoritative', evidenceType: 'OBSERVED' };
             }
           }
         } else {
@@ -134,9 +199,71 @@ export class ContentScriptCoordinator {
         }
       }
 
+      // Priority C: DOM header switcher fallback if still unresolved
+      if (!model) {
+        model = this.modelDetector.detect(document);
+        modelProvenance = { source: 'dom', evidenceType: 'OBSERVED' };
+      }
+
+      // 5. Supplement with in-flight Network evidence
+      // 5a. In-flight User Prompt (observed immediately on POST before API or DOM settles)
+      const pendingUserTurn = this.requestObserver.getPendingUserTurn();
+      if (pendingUserTurn) {
+        const alreadyExists = effectiveMessages.some(m => 
+          m.id === pendingUserTurn.id || 
+          (m.role === 'user' && m.text && m.text === pendingUserTurn.text)
+        );
+        if (!alreadyExists) {
+          effectiveMessages.push(pendingUserTurn);
+        }
+      }
+
+      // 5b. Live Streaming Assistant Turn (from Network SSE stream or DOM)
+      const netStreamingTurn = this.requestObserver.getStreamingTurn();
+      const domStreamingTurn = rawDomMessages.find(m => m.isStreaming);
+
+      let activeStreamingTurn = null;
+      if (netStreamingTurn && netStreamingTurn.isStreaming) {
+        activeStreamingTurn = netStreamingTurn;
+        // If DOM has longer text, prefer the longer text without duplicating
+        if (domStreamingTurn && domStreamingTurn.text && domStreamingTurn.text.length > activeStreamingTurn.text.length) {
+          activeStreamingTurn = {
+            ...activeStreamingTurn,
+            text: domStreamingTurn.text,
+            parts: [{ type: 'text', text: domStreamingTurn.text }],
+            source: 'dom'
+          };
+        }
+      } else if (domStreamingTurn) {
+        activeStreamingTurn = domStreamingTurn;
+      }
+
+      if (activeStreamingTurn) {
+        // Prevent duplicate messages: update in-place if ID or streaming slot exists
+        const existingIndex = effectiveMessages.findIndex(m => m.id === activeStreamingTurn.id);
+        if (existingIndex !== -1) {
+          effectiveMessages[existingIndex] = {
+            ...effectiveMessages[existingIndex],
+            ...activeStreamingTurn,
+            isStreaming: true
+          };
+        } else {
+          const lastEff = effectiveMessages[effectiveMessages.length - 1];
+          if (lastEff && lastEff.role === activeStreamingTurn.role && (lastEff.id === activeStreamingTurn.id || lastEff.isStreaming)) {
+            effectiveMessages[effectiveMessages.length - 1] = {
+              ...lastEff,
+              ...activeStreamingTurn,
+              isStreaming: true
+            };
+          } else {
+            effectiveMessages.push(activeStreamingTurn);
+          }
+        }
+      }
+
       const encoding = model?.encoding || 'o200k_base';
 
-      // 5. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
+      // 6. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
       const tokenizedMessages = effectiveMessages.map(msg => {
         const parts = msg.parts || [{ type: 'text', text: msg.text }];
         const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, encoding);
@@ -150,10 +277,28 @@ export class ContentScriptCoordinator {
         };
       });
 
-      // 6. Detect tools, search, memory, and MCP
-      const tools = this.toolDetector.detect(document);
+      // 7. Detect tools from both DOM and Network
+      const domTools = this.toolDetector.detect(document);
+      const netTools = this.requestObserver.getObservedTools();
+      const combinedToolList = [...(domTools.list || [])];
 
-      // 7. Calculate context metrics
+      for (const nt of netTools) {
+        if (!combinedToolList.some(t => t.type === nt.name || t.label?.toLowerCase() === nt.name.toLowerCase())) {
+          combinedToolList.push({
+            type: nt.name,
+            label: nt.name === 'web_search' ? 'Web Search' : nt.name,
+            source: 'network',
+            evidenceType: 'OBSERVED'
+          });
+        }
+      }
+
+      const tools = {
+        observed: domTools.observed || netTools.length > 0,
+        list: combinedToolList
+      };
+
+      // 8. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
@@ -166,21 +311,44 @@ export class ContentScriptCoordinator {
         isPartial: false
       });
 
-      // Attach authoritative observables
+      // Attach authoritative & network observables
+      const networkHealth = this.requestObserver.getHealth();
       contextState.observables.dataSource = dataSource;
       contextState.observables.conversationId = conversationId;
       contextState.observables.domMessagesCount = rawDomMessages.length;
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
+      contextState.observables.network = networkHealth;
+
       if (apiError) {
         contextState.observables.apiError = apiError;
       }
 
+      // 9. Stamped Epistemic Evidence Model (Task 13)
+      contextState.evidence = {
+        dataSource: {
+          value: dataSource,
+          source: dataSource === 'authoritative' ? 'authoritative_api' : (dataSource === 'dom_fallback' ? 'dom_fallback' : 'dom'),
+          evidenceType: dataSource === 'authoritative' ? 'EXACT' : 'OBSERVED'
+        },
+        model: {
+          value: model.id,
+          source: modelProvenance.source,
+          evidenceType: 'OBSERVED'
+        },
+        networkHealth: {
+          value: networkHealth.networkAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
+          source: 'network',
+          evidenceType: 'OBSERVED',
+          details: networkHealth
+        }
+      };
+
       this.latestState = contextState;
 
-      // 8. Update in-page floating HUD
+      // 10. Update in-page floating HUD
       this.overlayUI.update(contextState);
 
-      // 9. Sync state to chrome.storage.session and background service worker
+      // 11. Sync state to chrome.storage.session and background service worker
       this.syncState(contextState);
 
     } catch (err) {

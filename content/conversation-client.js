@@ -32,7 +32,7 @@ export class ConversationClient {
    * @returns {string|null}
    */
   extractConversationId(urlString) {
-    const url = urlString || (typeof window !== 'undefined' ? window.location.href : '');
+    const url = urlString || (typeof window !== 'undefined' && window.location ? window.location.href : '');
     if (!url) return null;
 
     try {

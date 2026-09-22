@@ -26,6 +26,7 @@ if (!fs.existsSync(distDir)) {
 const filesToInclude = [
   'manifest.json',
   'background/service-worker.js',
+  'content/network-interceptor.js',
   'content/content-script.js',
   'popup/popup.html',
   'popup/popup.css',

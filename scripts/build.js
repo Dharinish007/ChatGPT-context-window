@@ -84,6 +84,9 @@ const overlayCode = fs.readFileSync(path.join(rootDir, 'content', 'overlay-ui.js
 const domObserverCode = fs.readFileSync(path.join(rootDir, 'content', 'chatgpt-dom.js'), 'utf8')
   .replace(/export\s+/g, '');
 
+const requestObserverCode = fs.readFileSync(path.join(rootDir, 'network', 'request-observer.js'), 'utf8')
+  .replace(/export\s+/g, '');
+
 const contentMainCode = fs.readFileSync(path.join(rootDir, 'content', 'content-main.js'), 'utf8')
   .replace(/import\s+.*?from\s+.*?;/g, '')
   .replace(/export\s+/g, '');
@@ -115,6 +118,9 @@ const bundledContentScript = `/**
   ${confidenceCode}
 
   ${calculatorCode}
+
+  // --- Network Layer ---
+  ${requestObserverCode}
 
   // --- Content & DOM Adapters ---
   ${conversationClientCode}

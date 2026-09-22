@@ -5,6 +5,7 @@
 import { runTokenizerTests } from './unit/tokenizer.test.js';
 import { runContextEngineTests } from './unit/context-engine.test.js';
 import { runConversationClientTests } from './unit/conversation-client.test.js';
+import { runNetworkObserverTests } from './unit/network-observer.test.js';
 import { runDomExtractorTests } from './dom/extractor.test.js';
 
 console.log('========================================================');
@@ -34,10 +35,16 @@ totalPassed += r3.passed;
 totalFailed += r3.failed;
 console.log('');
 
-// 4. DOM extractor tests
-const r4 = runDomExtractorTests();
+// 4. Network intelligence & observer tests (Group C)
+const r4 = runNetworkObserverTests();
 totalPassed += r4.passed;
 totalFailed += r4.failed;
+console.log('');
+
+// 5. DOM extractor tests
+const r5 = runDomExtractorTests();
+totalPassed += r5.passed;
+totalFailed += r5.failed;
 console.log('');
 
 const t1 = performance.now();

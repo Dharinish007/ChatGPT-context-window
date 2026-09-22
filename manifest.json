@@ -28,6 +28,17 @@
         "https://chat.openai.com/*"
       ],
       "js": [
+        "content/network-interceptor.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
         "content/content-script.js"
       ],
       "run_at": "document_idle"
