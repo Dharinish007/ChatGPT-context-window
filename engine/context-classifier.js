@@ -40,6 +40,18 @@ export class ContextClassifier {
   }
 
   /**
+   * Classifies subscription plan tier identification accuracy.
+   * @param {string|null} planTier 
+   * @returns {string} AccuracyClass
+   */
+  static classifyPlan(planTier) {
+    if (!planTier || planTier === 'unknown') {
+      return AccuracyClass.UNKNOWN;
+    }
+    return AccuracyClass.OBSERVED;
+  }
+
+  /**
    * Classifies context limit accuracy.
    * @param {number|null} contextWindow 
    * @param {boolean} isVerified 

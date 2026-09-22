@@ -48,6 +48,10 @@ export class ConfidenceEngine {
     const {
       isAuthoritative = false,
       isModelKnown = true,
+      isLimitVerified = true,
+      planTier,
+      isPlanKnown,
+      contextLimit = null,
       modelDisplayName = '',
       messageCount = 0,
       attachmentCount = 0,
@@ -138,10 +142,23 @@ export class ConfidenceEngine {
       factors.push({ type: 'positive', text: 'DOM/API agreement' });
     }
 
-    // --- Factor E: Model Identity & Limits Verification ---
+    // --- Factor E: Model Identity & Limits Verification (Group F) ---
     if (isModelKnown) {
       if (!factors.some(f => f.text === 'DOM/API agreement')) {
         score += 0.05;
+      }
+
+      if (planTier !== undefined) {
+        const effectivePlanKnown = isPlanKnown !== undefined ? isPlanKnown : (planTier !== 'unknown' && Boolean(planTier));
+        if (!effectivePlanKnown || planTier === 'unknown') {
+          score -= 0.15;
+          factors.push({ type: 'negative', text: 'ChatGPT plan tier unknown; context window limit cannot be verified' });
+        } else if (effectivePlanKnown && !isLimitVerified) {
+          score -= 0.10;
+          factors.push({ type: 'negative', text: `Context limit for plan ${planTier} is unverified by OpenAI documentation` });
+        } else if (effectivePlanKnown && isLimitVerified) {
+          factors.push({ type: 'positive', text: `Verified ${planTier.toUpperCase()} plan context limit` });
+        }
       }
     } else {
       score -= 0.40;

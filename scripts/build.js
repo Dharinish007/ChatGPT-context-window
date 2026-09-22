@@ -69,7 +69,11 @@ const calculatorCode = fs.readFileSync(path.join(rootDir, 'engine', 'context-cal
 const extractorCode = fs.readFileSync(path.join(rootDir, 'content', 'message-extractor.js'), 'utf8')
   .replace(/export\s+/g, '');
 
+const planDetectorCode = fs.readFileSync(path.join(rootDir, 'content', 'plan-detector.js'), 'utf8')
+  .replace(/export\s+/g, '');
+
 const detectorCode = fs.readFileSync(path.join(rootDir, 'content', 'model-detector.js'), 'utf8')
+  .replace(/import\s+.*?from\s+.*?;/g, '')
   .replace(/export\s+/g, '');
 
 const conversationClientCode = fs.readFileSync(path.join(rootDir, 'content', 'conversation-client.js'), 'utf8')
@@ -131,6 +135,8 @@ const bundledContentScript = `/**
   ${conversationClientCode}
 
   ${extractorCode}
+
+  ${planDetectorCode}
 
   ${detectorCode}
 

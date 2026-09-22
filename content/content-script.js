@@ -14,116 +14,485 @@
   // Embedded verified model limits configuration
   const MODEL_LIMITS_DB = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.0.0",
-  "lastUpdated": "2026-09-21",
+  "version": "2.0.0",
+  "lastUpdated": "2026-09-22",
+  "metadata": {
+    "name": "ChatGPT Context Monitor - Model & Plan Context Limits Database",
+    "description": "Verified model and subscription tier context limits for ChatGPT Web product interface vs OpenAI Developer API.",
+    "version": "2.0.0",
+    "schemaVersion": "2.0",
+    "refreshable": true,
+    "sourceUrl": "https://platform.openai.com/docs/models",
+    "lastVerified": "2026-09-22"
+  },
+  "plans": {
+    "free": {
+      "id": "free",
+      "displayName": "Free",
+      "tier": "free",
+      "description": "Standard free ChatGPT account with dynamic rate limits and smaller active context window.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "go": {
+      "id": "go",
+      "displayName": "Go",
+      "tier": "go",
+      "description": "Low-cost plan for heavy free-tier users. Context window unconfirmed by official documentation.",
+      "source": "OpenAI Help Center rollout preview (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "plus": {
+      "id": "plus",
+      "displayName": "Plus",
+      "tier": "plus",
+      "description": "Individual premium subscription with access to flagship models and 32k active conversation context.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "pro": {
+      "id": "pro",
+      "displayName": "Pro",
+      "tier": "pro",
+      "description": "High-tier subscription ($200/mo) with unlimited access to reasoning models and extended context handling.",
+      "source": "OpenAI Pro Announcement & Help Center (openai.com/index/introducing-chatgpt-pro)",
+      "lastVerified": "2026-09-20"
+    },
+    "team": {
+      "id": "team",
+      "displayName": "Team",
+      "tier": "team",
+      "description": "Workspace plan for teams with dedicated admin controls, data privacy, and 32k conversation context.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "business": {
+      "id": "business",
+      "displayName": "Business",
+      "tier": "business",
+      "description": "Mid-market business workspace plan with admin console, team management, and 32k context.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "enterprise": {
+      "id": "enterprise",
+      "displayName": "Enterprise",
+      "tier": "enterprise",
+      "description": "Enterprise-grade tier with custom data retention, SSO, and 128k context window.",
+      "source": "OpenAI Enterprise Documentation (openai.com/index/chatgpt-enterprise)",
+      "lastVerified": "2026-09-20"
+    },
+    "edu": {
+      "id": "edu",
+      "displayName": "Edu",
+      "tier": "edu",
+      "description": "Educational institution tier built on ChatGPT Enterprise infrastructure with 128k context.",
+      "source": "OpenAI for Education Announcement (openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "unknown": {
+      "id": "unknown",
+      "displayName": "Unknown Plan",
+      "tier": "unknown",
+      "description": "Subscription tier could not be reliably determined from observable signals.",
+      "source": "Unobservable or unauthenticated session",
+      "lastVerified": null
+    }
+  },
   "models": {
     "gpt-4o": {
       "displayName": "GPT-4o",
       "aliases": ["gpt-4o", "4o", "chatgpt-4o", "omni"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 16384,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o)",
-      "lastVerified": "2026-09-20",
-      "notes": "Flagship multimodal model with 128k token context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center & Community Reference (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Free tier 8K active conversation context window."
+        },
+        "go": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "Initial rollout preview; exact token limit unconfirmed by OpenAI documentation",
+          "lastVerified": "2026-09-20",
+          "notes": "Context limit marked UNKNOWN per zero-guessing rule."
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center & Announcement Reference (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Plus 32K active conversation turn context window."
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement & Documentation (openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Pro extended context access up to full 128K model capacity."
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Team 32K active conversation context window."
+        },
+        "business": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Business & Team Documentation (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Business 32K active conversation context window."
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com/index/chatgpt-enterprise)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Enterprise 128K context window."
+        },
+        "edu": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Edu Documentation (openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Edu 128K context window."
+        }
+      }
     },
     "gpt-4o-mini": {
       "displayName": "GPT-4o mini",
       "aliases": ["gpt-4o-mini", "4o-mini", "chatgpt-4o-mini"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 16384,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o-mini)",
-      "lastVerified": "2026-09-20",
-      "notes": "Fast, cost-efficient model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o-mini)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Free tier 8K active context window for mini model."
+        },
+        "go": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "Unconfirmed by OpenAI public documentation",
+          "lastVerified": "2026-09-20",
+          "notes": "Context limit marked UNKNOWN."
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Plus 32K context window."
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement & Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "business": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Business Documentation (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com/index/chatgpt-enterprise)",
+          "lastVerified": "2026-09-20"
+        },
+        "edu": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Edu Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-4.5": {
       "displayName": "GPT-4.5",
       "aliases": ["gpt-4.5", "gpt-4.5-preview", "4.5"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 16384,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-5-preview)",
-      "lastVerified": "2026-09-20",
-      "notes": "Large scale flagship model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-5-preview)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o1": {
       "displayName": "o1",
       "aliases": ["o1", "o1-full", "openai-o1", "reasoning"],
       "encoding": "o200k_base",
+      "apiContextLimit": 200000,
       "contextWindow": 200000,
       "maxOutput": 100000,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1)",
-      "lastVerified": "2026-09-20",
-      "notes": "Advanced reasoning model with 200k context window and up to 100k reasoning/output tokens."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o1)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Plus reasoning turn window."
+        },
+        "pro": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com/index/introducing-chatgpt-pro)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Pro unlimited o1 access with 200k context window."
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "business": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "edu": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Edu Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o1-mini": {
       "displayName": "o1-mini",
       "aliases": ["o1-mini", "openai-o1-mini"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 65536,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-mini)",
-      "lastVerified": "2026-09-20",
-      "notes": "Faster reasoning model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-mini)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o1-preview": {
       "displayName": "o1-preview",
       "aliases": ["o1-preview", "openai-o1-preview"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 32768,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-preview)",
-      "lastVerified": "2026-09-20",
-      "notes": "Initial reasoning preview model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-preview)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o3-mini": {
       "displayName": "o3-mini",
       "aliases": ["o3-mini", "openai-o3-mini", "o3"],
       "encoding": "o200k_base",
+      "apiContextLimit": 200000,
       "contextWindow": 200000,
       "maxOutput": 100000,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o3-mini)",
-      "lastVerified": "2026-09-20",
-      "notes": "High-efficiency reasoning model with 200k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o3-mini)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "pro": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-4-turbo": {
       "displayName": "GPT-4 Turbo",
       "aliases": ["gpt-4-turbo", "gpt-4-turbo-preview", "turbo"],
       "encoding": "cl100k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 4096,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-turbo-and-gpt-4)",
-      "lastVerified": "2026-09-20",
-      "notes": "128k context window with 4k max output."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-turbo-and-gpt-4)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-4": {
       "displayName": "GPT-4 (Legacy)",
       "aliases": ["gpt-4", "gpt-4-0613", "gpt-4-classic"],
       "encoding": "cl100k_base",
+      "apiContextLimit": 8192,
       "contextWindow": 8192,
       "maxOutput": 4096,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4)",
-      "lastVerified": "2026-09-20",
-      "notes": "Original GPT-4 with 8,192 token context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-3.5-turbo": {
       "displayName": "GPT-3.5 Turbo",
       "aliases": ["gpt-3.5", "gpt-3.5-turbo", "3.5"],
       "encoding": "cl100k_base",
+      "apiContextLimit": 16385,
       "contextWindow": 16385,
       "maxOutput": 4096,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-3-5-turbo)",
-      "lastVerified": "2026-09-20",
-      "notes": "16k context window legacy model."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-3-5-turbo)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "plus": {
+          "contextWindow": 16385,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     }
   },
   "productDisclaimers": {
-    "apiVsProduct": "Model limits listed reflect the underlying OpenAI model context window. ChatGPT Web product interfaces may enforce dynamic conversation turn caps, subscription tier limits, or internal system overhead not exposed in the client.",
-    "freeTierLimits": "ChatGPT Free tier message limits are dynamic and managed server-side by OpenAI without a fixed client-side constant. Counters are never fabricated.",
+    "apiVsProduct": "CRITICAL: OpenAI API context limit reflects the raw developer engine capacity (e.g. 128K for GPT-4o). In the consumer/enterprise ChatGPT Web product, context limits are governed by the user's active subscription tier (e.g. Free 8K, Plus 32K, Enterprise 128K). The extension strictly avoids using the API context window as a substitute for product limits.",
+    "freeTierLimits": "ChatGPT Free tier context windows and rate limits are managed server-side by OpenAI without a fixed client constant. Never guess or fabricate unverified limits.",
     "unknownModelFallback": {
       "displayName": "Unknown Model",
       "encoding": "o200k_base",
+      "apiContextLimit": null,
       "contextWindow": null,
       "maxOutput": null,
       "source": "Unrecognized or custom model identifier",
@@ -905,6 +1274,18 @@ class ContextClassifier {
   }
 
   /**
+   * Classifies subscription plan tier identification accuracy.
+   * @param {string|null} planTier 
+   * @returns {string} AccuracyClass
+   */
+  static classifyPlan(planTier) {
+    if (!planTier || planTier === 'unknown') {
+      return AccuracyClass.UNKNOWN;
+    }
+    return AccuracyClass.OBSERVED;
+  }
+
+  /**
    * Classifies context limit accuracy.
    * @param {number|null} contextWindow 
    * @param {boolean} isVerified 
@@ -1115,11 +1496,18 @@ class EvidenceMerger {
       allConflicts.push(...toolResult.conflicts);
     }
 
+    // 5. Plan tier reconciliation (Group F)
+    const planResult = this.reconcileField('plan', input.planCandidates || []);
+    if (planResult.hasConflict) {
+      allConflicts.push(...planResult.conflicts);
+    }
+
     const completeness = input.completeness || {};
     const networkHealth = input.networkHealth || {};
 
     const evidence = {
       model: modelResult.winner,
+      plan: planResult.winner,
       turns: turnResult.winner,
       attachments: attachResult.winner,
       tools: toolResult.winner,
@@ -1159,6 +1547,13 @@ class EvidenceMerger {
           evidenceType: input.tokens.contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
         }
       } : null,
+      limit: {
+        value: input.limit?.contextWindow ?? input.tokens?.contextWindow ?? null,
+        apiLimit: input.limit?.apiContextLimit ?? input.model?.apiContextLimit ?? null,
+        status: input.limit?.status || ((input.limit?.contextWindow ?? input.tokens?.contextWindow) ? 'VERIFIED' : 'UNKNOWN'),
+        source: input.limit?.source || 'model_db',
+        evidenceType: (input.limit?.contextWindow ?? input.tokens?.contextWindow) ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+      },
       serverContext: {
         value: 'UNOBSERVABLE',
         source: 'unknown',
@@ -1242,6 +1637,10 @@ class ConfidenceEngine {
     const {
       isAuthoritative = false,
       isModelKnown = true,
+      isLimitVerified = true,
+      planTier,
+      isPlanKnown,
+      contextLimit = null,
       modelDisplayName = '',
       messageCount = 0,
       attachmentCount = 0,
@@ -1332,10 +1731,23 @@ class ConfidenceEngine {
       factors.push({ type: 'positive', text: 'DOM/API agreement' });
     }
 
-    // --- Factor E: Model Identity & Limits Verification ---
+    // --- Factor E: Model Identity & Limits Verification (Group F) ---
     if (isModelKnown) {
       if (!factors.some(f => f.text === 'DOM/API agreement')) {
         score += 0.05;
+      }
+
+      if (planTier !== undefined) {
+        const effectivePlanKnown = isPlanKnown !== undefined ? isPlanKnown : (planTier !== 'unknown' && Boolean(planTier));
+        if (!effectivePlanKnown || planTier === 'unknown') {
+          score -= 0.15;
+          factors.push({ type: 'negative', text: 'ChatGPT plan tier unknown; context window limit cannot be verified' });
+        } else if (effectivePlanKnown && !isLimitVerified) {
+          score -= 0.10;
+          factors.push({ type: 'negative', text: `Context limit for plan ${planTier} is unverified by OpenAI documentation` });
+        } else if (effectivePlanKnown && isLimitVerified) {
+          factors.push({ type: 'positive', text: `Verified ${planTier.toUpperCase()} plan context limit` });
+        }
       }
     } else {
       score -= 0.40;
@@ -1497,8 +1909,31 @@ class ContextCalculator {
     // Total measurable context
     const totalMeasurableTokens = conversationTokens + attachmentTokens;
 
-    // Context window & utilization
-    const contextWindow = model.contextWindow || null;
+    // Resolve plan tier and source (Group F)
+    const planInput = input.plan;
+    let planTier = 'unknown';
+    let planSource = 'unknown';
+    if (typeof planInput === 'string') {
+      planTier = planInput;
+    } else if (planInput && typeof planInput === 'object') {
+      planTier = planInput.value || planInput.tier || 'unknown';
+      planSource = planInput.source || 'unknown';
+    } else if (model.planTier) {
+      planTier = model.planTier;
+    }
+
+    // Context window & utilization (Group F)
+    // Rule: Never invent a limit. If model is unknown or plan is unknown, contextWindow = null
+    let contextWindow = null;
+    if (model.id !== 'unknown') {
+      if (planTier !== 'unknown' && model.contextWindow) {
+        contextWindow = model.contextWindow;
+      } else if (input.plan === undefined && model.contextWindow) {
+        // Backward compatibility for standalone callers without plan context
+        contextWindow = model.contextWindow;
+      }
+    }
+
     let utilizationPercent = null;
     if (contextWindow && contextWindow > 0) {
       utilizationPercent = Math.min(100, Number(((totalMeasurableTokens / contextWindow) * 100).toFixed(1)));
@@ -1508,7 +1943,8 @@ class ContextCalculator {
     const accuracy = {
       conversation: ContextClassifier.classifyConversation(Boolean(authoritative?.tokens)),
       model: ContextClassifier.classifyModel(model.id),
-      contextWindow: ContextClassifier.classifyLimit(contextWindow, Boolean(model.source)),
+      plan: ContextClassifier.classifyPlan(planTier),
+      contextWindow: ContextClassifier.classifyLimit(contextWindow, model.limitStatus === 'VERIFIED'),
       attachments: ContextClassifier.classifyAttachment(attachments.count, !attachments.hasUnknown),
       memory: ContextClassifier.classifyMemory(),
       tools: ContextClassifier.classifyTools(tools.observed),
@@ -1526,10 +1962,14 @@ class ContextCalculator {
       completenessSource: Boolean(authoritative?.tokens) ? 'authoritative_api' : (isPartial ? 'dom_partial' : 'dom_complete')
     };
 
-    // Confidence evaluation with evidence-based factors (Group E)
+    // Confidence evaluation with evidence-based factors (Group E + F)
     const confidence = ConfidenceEngine.evaluate({
       isAuthoritative: Boolean(authoritative?.tokens),
-      isModelKnown: model.id !== 'unknown' && Boolean(contextWindow),
+      isModelKnown: model.id !== 'unknown',
+      isLimitVerified: Boolean(contextWindow) && model.limitStatus !== 'UNVERIFIED',
+      contextLimit: contextWindow,
+      planTier,
+      isPlanKnown: planTier !== 'unknown' && Boolean(planTier),
       modelDisplayName: model.displayName,
       messageCount: messages.length,
       attachmentCount: attachments.count,
@@ -1542,16 +1982,27 @@ class ContextCalculator {
       conflicts: input.conflicts || []
     });
 
+    const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);
+
     return {
       timestamp: Date.now(),
       model: {
         id: model.id || 'unknown',
         displayName: model.displayName || 'Unknown Model',
         encoding: model.encoding || 'o200k_base',
+        apiContextLimit,
         contextWindow: contextWindow,
         maxOutput: model.maxOutput || null,
+        planTier,
+        limitStatus: model.limitStatus || (contextWindow ? 'VERIFIED' : 'UNKNOWN'),
         source: model.source || 'unverified',
         accuracy: accuracy.model
+      },
+      plan: {
+        tier: planTier,
+        displayName: planTier.charAt(0).toUpperCase() + planTier.slice(1),
+        source: planSource,
+        accuracy: accuracy.plan
       },
       tokens: {
         user: userTokens,
@@ -1603,6 +2054,18 @@ class ContextCalculator {
           value: model.id,
           source: model.source || 'model_db',
           evidenceType: model.id !== 'unknown' ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+        },
+        plan: {
+          value: planTier,
+          source: planSource,
+          evidenceType: planTier !== 'unknown' ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+        },
+        limit: {
+          value: contextWindow,
+          apiLimit: apiContextLimit,
+          status: model.limitStatus || (contextWindow ? 'VERIFIED' : 'UNKNOWN'),
+          source: model.limitSource || 'model_db',
+          evidenceType: contextWindow ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
         },
         turns: {
           value: messages.length,
@@ -1708,6 +2171,7 @@ class RequestObserver {
     // Normalized Network Evidence State
     this.activeConversationId = null;
     this.observedModel = null; // { value: string, source: 'network', evidenceType: 'OBSERVED' }
+    this.observedPlan = null; // { value: string, source: 'network', evidenceType: 'OBSERVED' }
     this.pendingUserTurn = null; // { id, role: 'user', parts, text, source: 'network', evidenceType: 'OBSERVED' }
     this.activeStreamingTurn = null; // { id, role: 'assistant', parts, text, isStreaming: true, ... }
     this.observedTools = new Map(); // toolName -> { name, status, source: 'network', evidenceType: 'OBSERVED' }
@@ -1822,6 +2286,18 @@ class RequestObserver {
           }
           if (typeof this.onConversationLoaded === 'function') {
             this.onConversationLoaded(payload);
+          }
+          break;
+
+        case 'ACCOUNT_PLAN_OBSERVED':
+          if (payload.planType) {
+            this.observedPlan = {
+              value: payload.planType,
+              source: 'network',
+              evidenceType: 'OBSERVED',
+              endpoint: payload.endpoint || null,
+              timestamp: Date.now()
+            };
           }
           break;
 
@@ -2016,6 +2492,14 @@ class RequestObserver {
    */
   getObservedModel() {
     return this.observedModel;
+  }
+
+  /**
+   * Returns currently observed user plan tier with provenance, or null.
+   * @returns {{ value: string, source: string, evidenceType: string }|null}
+   */
+  getObservedPlan() {
+    return this.observedPlan;
   }
 
   /**
@@ -2613,23 +3097,355 @@ class MessageExtractor {
 
 
   /**
- * ChatGPT Context Monitor - Model Detector
+ * ChatGPT Context Monitor - Plan Detector
+ * 
+ * Inspects ChatGPT Web DOM headers, buttons, and navigation elements to identify
+ * the user's active ChatGPT subscription plan tier (free, go, plus, pro, team, business, enterprise, edu).
+ * 
+ * Principle: Detect only from reliable observable signals; never guess.
+ */
+
+const PlanTier = Object.freeze({
+  FREE: 'free',
+  GO: 'go',
+  PLUS: 'plus',
+  PRO: 'pro',
+  TEAM: 'team',
+  BUSINESS: 'business',
+  ENTERPRISE: 'enterprise',
+  EDU: 'edu',
+  UNKNOWN: 'unknown'
+});
+
+/**
+ * Normalizes an arbitrary plan string into a standard PlanTier.
+ * @param {string|null} rawString 
+ * @returns {string}
+ */
+function normalizePlanTier(rawString) {
+  if (!rawString || typeof rawString !== 'string') {
+    return PlanTier.UNKNOWN;
+  }
+
+  const s = rawString.toLowerCase().trim();
+
+  if (s === 'free' || s.includes('free_tier') || s.includes('free-tier')) {
+    return PlanTier.FREE;
+  }
+  if (s === 'go' || s.includes('chatgpt_go') || s.includes('chatgpt-go')) {
+    return PlanTier.GO;
+  }
+  if (s === 'plus' || s.includes('chatgpt_plus') || s.includes('chatgpt-plus') || s.includes('plus_subscriber')) {
+    return PlanTier.PLUS;
+  }
+  if (s === 'pro' || s.includes('chatgpt_pro') || s.includes('chatgpt-pro') || s.includes('pro_subscriber')) {
+    return PlanTier.PRO;
+  }
+  if (s === 'team' || s.includes('chatgpt_team') || s.includes('chatgpt-team')) {
+    return PlanTier.TEAM;
+  }
+  if (s === 'business' || s.includes('chatgpt_business') || s.includes('chatgpt-business')) {
+    return PlanTier.BUSINESS;
+  }
+  if (s === 'enterprise' || s.includes('chatgpt_enterprise') || s.includes('chatgpt-enterprise')) {
+    return PlanTier.ENTERPRISE;
+  }
+  if (s === 'edu' || s.includes('chatgpt_edu') || s.includes('chatgpt-edu')) {
+    return PlanTier.EDU;
+  }
+
+  return PlanTier.UNKNOWN;
+}
+
+class PlanDetector {
+  /**
+   * Scans DOM for observable signals of subscription plan tier.
+   * @param {Document|HTMLElement} root 
+   * @returns {{ value: string, raw: string|null, source: string, evidenceType: string }}
+   */
+  detect(root = document) {
+    if (!root) {
+      return {
+        value: PlanTier.UNKNOWN,
+        raw: null,
+        source: 'unknown',
+        evidenceType: 'UNKNOWN'
+      };
+    }
+
+    // 1. Check for explicit Paid Plan indicators in Profile, Header, or Sidebar
+    const profileSelectors = [
+      "button[data-testid='profile-button']",
+      "button[aria-label*='Profile']",
+      "button[data-testid*='user-menu']",
+      "div[data-testid='user-profile']",
+      "header span[class*='badge']",
+      "nav [data-testid*='plan-badge']",
+      "[data-testid='workspace-name']"
+    ];
+
+    for (const sel of profileSelectors) {
+      const el = root.querySelector(sel);
+      if (el) {
+        const text = (el.innerText || el.textContent || '').trim();
+        if (text) {
+          if (/\bPro\b/i.test(text)) {
+            return { value: PlanTier.PRO, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
+          }
+          if (/\bEnterprise\b/i.test(text)) {
+            return { value: PlanTier.ENTERPRISE, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
+          }
+          if (/\bTeam\b/i.test(text)) {
+            return { value: PlanTier.TEAM, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
+          }
+          if (/\bBusiness\b/i.test(text)) {
+            return { value: PlanTier.BUSINESS, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
+          }
+          if (/\bEdu\b/i.test(text)) {
+            return { value: PlanTier.EDU, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
+          }
+          if (/\bPlus\b/i.test(text)) {
+            return { value: PlanTier.PLUS, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
+          }
+        }
+      }
+    }
+
+    // 2. Check sidebar branding or header text (e.g. "ChatGPT Plus", "ChatGPT Pro")
+    const headerEl = root.querySelector('header') || root.querySelector('nav');
+    if (headerEl) {
+      const headerText = (headerEl.innerText || headerEl.textContent || '');
+      if (/ChatGPT\s+Pro\b/i.test(headerText)) {
+        return { value: PlanTier.PRO, raw: 'ChatGPT Pro', source: 'dom', evidenceType: 'OBSERVED' };
+      }
+      if (/ChatGPT\s+Enterprise\b/i.test(headerText)) {
+        return { value: PlanTier.ENTERPRISE, raw: 'ChatGPT Enterprise', source: 'dom', evidenceType: 'OBSERVED' };
+      }
+      if (/ChatGPT\s+Team\b/i.test(headerText)) {
+        return { value: PlanTier.TEAM, raw: 'ChatGPT Team', source: 'dom', evidenceType: 'OBSERVED' };
+      }
+      if (/ChatGPT\s+Plus\b/i.test(headerText)) {
+        return { value: PlanTier.PLUS, raw: 'ChatGPT Plus', source: 'dom', evidenceType: 'OBSERVED' };
+      }
+    }
+
+    // 3. Check for Free Tier indicators (Upgrade buttons / links)
+    const upgradeSelectors = [
+      "a[href*='/checkout']",
+      "button[data-testid*='upgrade']",
+      "a[href*='/explore']",
+      "a[href*='/pricing']",
+      "[data-testid*='upgrade-button']"
+    ];
+
+    for (const sel of upgradeSelectors) {
+      const el = root.querySelector(sel);
+      if (el) {
+        const text = (el.innerText || el.textContent || '').trim();
+        if (/upgrade/i.test(text) || /upgrade to plus/i.test(text) || /upgrade plan/i.test(text)) {
+          return {
+            value: PlanTier.FREE,
+            raw: text,
+            source: 'dom',
+            evidenceType: 'OBSERVED'
+          };
+        }
+      }
+    }
+
+    // Check general navigation elements containing "Upgrade"
+    const navLinks = root.querySelectorAll('nav a, nav button, aside a, aside button');
+    for (let i = 0; i < navLinks.length; i++) {
+      const txt = (navLinks[i].innerText || navLinks[i].textContent || '').trim().toLowerCase();
+      if (txt === 'upgrade' || txt === 'upgrade plan' || txt === 'upgrade to plus') {
+        return {
+          value: PlanTier.FREE,
+          raw: txt,
+          source: 'dom',
+          evidenceType: 'OBSERVED'
+        };
+      }
+    }
+
+    // 4. Default safe fallback: Unknown
+    return {
+      value: PlanTier.UNKNOWN,
+      raw: null,
+      source: 'unknown',
+      evidenceType: 'UNKNOWN'
+    };
+  }
+}
+
+
+  /**
+ * ChatGPT Context Monitor - Model & Plan-Aware Limit Detector (Group F)
  * 
  * Inspects ChatGPT Web DOM headers, buttons, and metadata to identify the
- * active model, resolving it against verified model configurations.
+ * active model and resolves context-window limits based on the actual model + ChatGPT plan tier.
+ * 
+ * Features:
+ * - Model + Plan-aware context limit lookup
+ * - Versioned, refreshable limits configuration (avoids frozen hardcoded datasets)
+ * - Strict distinction: ChatGPT product context limit vs OpenAI Developer API limit
+ * - Safe fallback: unknown limit -> contextWindow = null, utilization = UNKNOWN
+ * - Zero guessing / zero fabrication
  */
+
+
 
 class ModelDetector {
   /**
    * @param {Object} modelLimitsDatabase Parsed content of config/model-limits.json
    */
   constructor(modelLimitsDatabase = {}) {
-    this.models = modelLimitsDatabase.models || {};
-    this.fallback = modelLimitsDatabase.productDisclaimers?.unknownModelFallback || {
+    this._loadConfig(modelLimitsDatabase);
+  }
+
+  /**
+   * Internal configuration loader and validator.
+   * @private
+   */
+  _loadConfig(database = {}) {
+    this.version = database.version || '1.0.0';
+    this.lastUpdated = database.lastUpdated || null;
+    this.metadata = database.metadata || {};
+    this.models = database.models || {};
+    this.plans = database.plans || {};
+    this.productDisclaimers = database.productDisclaimers || {};
+    this.fallback = database.productDisclaimers?.unknownModelFallback || {
       displayName: 'Unknown Model',
+      encoding: 'o200k_base',
+      apiContextLimit: null,
       contextWindow: null,
       maxOutput: null,
       source: 'Unrecognized model'
+    };
+  }
+
+  /**
+   * Refreshes the active limits configuration dynamically.
+   * Validates schema and versioning to prevent corrupted overrides.
+   * 
+   * @param {Object} newDatabase 
+   * @returns {{ success: boolean, version?: string, error?: string }}
+   */
+  refreshConfig(newDatabase) {
+    if (!newDatabase || typeof newDatabase !== 'object') {
+      return { success: false, error: 'Config must be an object' };
+    }
+    if (!newDatabase.models || typeof newDatabase.models !== 'object') {
+      return { success: false, error: 'Config missing required "models" dictionary' };
+    }
+
+    this._loadConfig(newDatabase);
+    return {
+      success: true,
+      version: this.version,
+      lastUpdated: this.lastUpdated
+    };
+  }
+
+  /**
+   * Returns active dataset version.
+   * @returns {string}
+   */
+  getConfigVersion() {
+    return this.version;
+  }
+
+  /**
+   * Returns active dataset last updated date.
+   * @returns {string|null}
+   */
+  getLastUpdated() {
+    return this.lastUpdated;
+  }
+
+  /**
+   * Resolves context limit specifically for a given model ID and plan tier.
+   * Strictly distinguishes between OpenAI API limit and ChatGPT Product limit.
+   * 
+   * @param {string} modelId 
+   * @param {string|null} planTier 
+   * @returns {{
+   *   contextWindow: number|null,
+   *   apiContextLimit: number|null,
+   *   status: 'VERIFIED'|'UNVERIFIED'|'UNKNOWN'|'API_DEFAULT',
+   *   source: string,
+   *   planTier: string,
+   *   modelId: string,
+   *   lastVerified: string|null
+   * }}
+   */
+  resolveLimit(modelId, planTier = null) {
+    const normModel = (modelId || '').toLowerCase().trim();
+    const normPlan = planTier ? normalizePlanTier(planTier) : PlanTier.UNKNOWN;
+
+    // Lookup model in database
+    let spec = this.models[normModel];
+    if (!spec) {
+      // Check aliases
+      for (const [id, s] of Object.entries(this.models)) {
+        if (s.aliases && s.aliases.includes(normModel)) {
+          spec = s;
+          break;
+        }
+      }
+    }
+
+    if (!spec) {
+      return {
+        contextWindow: null,
+        apiContextLimit: null,
+        status: 'UNKNOWN',
+        source: 'Unrecognized model',
+        planTier: normPlan,
+        modelId: normModel || 'unknown',
+        lastVerified: null
+      };
+    }
+
+    const apiContextLimit = spec.apiContextLimit ?? spec.contextWindow ?? null;
+
+    // If plan tier is unknown, the ChatGPT product limit cannot be determined
+    // Rule: Never substitute the API context limit for an unknown product limit!
+    if (normPlan === PlanTier.UNKNOWN || !normPlan) {
+      return {
+        contextWindow: null,
+        apiContextLimit,
+        status: 'UNKNOWN',
+        source: 'ChatGPT plan tier unknown; product context window cannot be verified',
+        planTier: PlanTier.UNKNOWN,
+        modelId: spec.id || normModel,
+        lastVerified: null
+      };
+    }
+
+    // Lookup explicit plan tier in productLimits
+    const planSpec = spec.productLimits?.[normPlan];
+    if (planSpec) {
+      return {
+        contextWindow: planSpec.contextWindow ?? null,
+        apiContextLimit,
+        status: planSpec.status || (planSpec.contextWindow ? 'VERIFIED' : 'UNKNOWN'),
+        source: planSpec.source || 'OpenAI verified product documentation',
+        planTier: normPlan,
+        modelId: spec.id || normModel,
+        lastVerified: planSpec.lastVerified || null,
+        notes: planSpec.notes || null
+      };
+    }
+
+    // Plan tier is recognized but model has no verified limit for this tier
+    return {
+      contextWindow: null,
+      apiContextLimit,
+      status: 'UNKNOWN',
+      source: `Model ${spec.displayName || normModel} has no verified context limit for plan ${normPlan}`,
+      planTier: normPlan,
+      modelId: spec.id || normModel,
+      lastVerified: null
     };
   }
 
@@ -2639,6 +3455,8 @@ class ModelDetector {
    * @returns {string|null} Raw detected model name
    */
   detectRawModelString(root = document) {
+    if (!root) return null;
+
     const candidateSelectors = [
       "button[data-testid='model-switcher-dropdown']",
       "button[aria-haspopup='menu'][data-testid*='model']",
@@ -2681,65 +3499,112 @@ class ModelDetector {
   }
 
   /**
-   * Resolves raw model string against verified model database.
-   * @param {string|null} rawString 
+   * Resolves raw model string and plan tier against verified model database.
+   * 
+   * @param {string|null} rawModelString 
+   * @param {string|null} [rawPlanString=null]
    * @returns {Object} Model specification with context limits
    */
-  resolveModel(rawString) {
-    if (!rawString) {
+  resolveModel(rawModelString, rawPlanString = null) {
+    if (!rawModelString) {
       return {
         id: 'unknown',
+        planTier: rawPlanString ? normalizePlanTier(rawPlanString) : PlanTier.UNKNOWN,
+        limitStatus: 'UNKNOWN',
         ...this.fallback
       };
     }
 
-    const normalized = rawString.toLowerCase().trim();
+    const normalized = rawModelString.toLowerCase().trim();
 
-    // 1. Direct key match
+    // 1. Direct key match or alias match
+    let matchedId = null;
+    let spec = null;
+
     if (this.models[normalized]) {
+      matchedId = normalized;
+      spec = this.models[normalized];
+    } else {
+      for (const [modelId, s] of Object.entries(this.models)) {
+        if (s.aliases && s.aliases.includes(normalized)) {
+          matchedId = modelId;
+          spec = s;
+          break;
+        }
+        if (normalized.includes(modelId)) {
+          matchedId = modelId;
+          spec = s;
+          break;
+        }
+      }
+    }
+
+    // 2. Unrecognized model fallback
+    if (!spec) {
+      const planTier = rawPlanString ? normalizePlanTier(rawPlanString) : PlanTier.UNKNOWN;
       return {
         id: normalized,
-        ...this.models[normalized]
+        displayName: rawModelString,
+        encoding: this.fallback.encoding || 'o200k_base',
+        apiContextLimit: null,
+        contextWindow: null,
+        maxOutput: null,
+        planTier,
+        limitStatus: 'UNKNOWN',
+        source: 'Unrecognized custom model or preview',
+        lastVerified: null
       };
     }
 
-    // 2. Alias match
-    for (const [modelId, spec] of Object.entries(this.models)) {
-      if (spec.aliases && spec.aliases.includes(normalized)) {
-        return {
-          id: modelId,
-          ...spec
-        };
-      }
-      // Substring fuzzy matching (e.g. "o1-preview-2024" -> "o1-preview")
-      if (normalized.includes(modelId)) {
-        return {
-          id: modelId,
-          ...spec
-        };
-      }
+    const apiContextLimit = spec.apiContextLimit ?? spec.contextWindow ?? null;
+
+    // 3. Resolve context window limit
+    // If rawPlanString was explicitly provided:
+    if (rawPlanString !== null && rawPlanString !== undefined) {
+      const limitResult = this.resolveLimit(matchedId, rawPlanString);
+      return {
+        id: matchedId,
+        displayName: spec.displayName,
+        aliases: spec.aliases || [],
+        encoding: spec.encoding || 'o200k_base',
+        apiContextLimit,
+        contextWindow: limitResult.contextWindow,
+        maxOutput: spec.maxOutput || null,
+        planTier: limitResult.planTier,
+        limitStatus: limitResult.status,
+        limitSource: limitResult.source,
+        source: limitResult.source,
+        lastVerified: limitResult.lastVerified
+      };
     }
 
-    // 3. Fallback for unrecognized models
+    // 4. Backward compatibility when no plan argument is passed:
+    // Retains underlying model API context window for callers without plan context
     return {
-      id: normalized,
-      displayName: rawString,
-      encoding: this.fallback.encoding || 'o200k_base',
-      contextWindow: null,
-      maxOutput: null,
-      source: 'Unrecognized custom model or preview',
-      lastVerified: null
+      id: matchedId,
+      displayName: spec.displayName,
+      aliases: spec.aliases || [],
+      encoding: spec.encoding || 'o200k_base',
+      apiContextLimit,
+      contextWindow: spec.contextWindow ?? apiContextLimit,
+      maxOutput: spec.maxOutput || null,
+      planTier: PlanTier.UNKNOWN,
+      limitStatus: 'API_DEFAULT',
+      limitSource: spec.apiSource || spec.source,
+      source: spec.apiSource || spec.source,
+      lastVerified: spec.apiLastVerified || spec.lastVerified || null
     };
   }
 
   /**
    * Runs complete detection from DOM root.
    * @param {Document|HTMLElement} root 
+   * @param {string|null} [planString=null]
    * @returns {Object}
    */
-  detect(root = document) {
+  detect(root = document, planString = null) {
     const raw = this.detectRawModelString(root);
-    return this.resolveModel(raw);
+    return this.resolveModel(raw, planString);
   }
 }
 
@@ -2987,7 +3852,10 @@ class OverlayUI {
     }
 
     const state = this.latestState;
-    const modelName = state?.model?.displayName || 'Detecting...';
+    const planTier = state?.model?.planTier || state?.plan?.tier;
+    const planSuffix = (planTier && planTier !== 'unknown') ? ` [${planTier.toUpperCase()}]` : '';
+    const rawModelName = state?.model?.displayName || 'Detecting...';
+    const modelName = `${rawModelName}${planSuffix}`;
     const totalTokensFormatted = state?.tokens?.formatted?.total || '0';
     const limitFormatted = state?.tokens?.formatted?.contextWindow || 'Unknown';
     const percent = state?.utilization?.percentage !== null && state?.utilization?.percentage !== undefined
@@ -3497,11 +4365,13 @@ class ChatGPTDOMObserver {
 
 
 
+
 class ContentScriptCoordinator {
   constructor(modelLimitsDb) {
     this.tokenizer = new Tokenizer();
     this.messageExtractor = new MessageExtractor();
     this.modelDetector = new ModelDetector(modelLimitsDb);
+    this.planDetector = new PlanDetector();
     this.conversationClient = new ConversationClient();
     this.attachmentDetector = new AttachmentDetector();
     this.toolDetector = new ToolDetector();
@@ -3898,8 +4768,28 @@ class ContentScriptCoordinator {
         });
       }
 
+      // Plan candidates (Group F)
+      const planCandidates = [];
+      const netPlan = this.requestObserver.getObservedPlan();
+      if (netPlan && netPlan.value) {
+        planCandidates.push({
+          value: normalizePlanTier(netPlan.value),
+          source: 'network',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+      const domPlan = this.planDetector.detect(document);
+      if (domPlan && domPlan.value && domPlan.value !== PlanTier.UNKNOWN) {
+        planCandidates.push({
+          value: domPlan.value,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
       const reconciled = EvidenceMerger.reconcileState({
         modelCandidates,
+        planCandidates,
         turnCandidates,
         attachmentCandidates,
         toolCandidates,
@@ -3907,18 +4797,16 @@ class ContentScriptCoordinator {
         networkHealth
       });
 
-      // Update model with winning reconciled model if available
-      if (reconciled.evidence?.model?.value) {
-        model = this.modelDetector.resolveModel(reconciled.evidence.model.value);
-      }
-      if (!model) {
-        model = domModel || this.modelDetector.resolveModel('unknown');
-      }
+      // Update model + plan-aware limits with winning evidence
+      const winningPlan = reconciled.evidence?.plan?.value || domPlan?.value || PlanTier.UNKNOWN;
+      const winningModelSlug = reconciled.evidence?.model?.value || (model && model.id) || (domModel && domModel.id) || 'unknown';
+      model = this.modelDetector.resolveModel(winningModelSlug, winningPlan);
 
       // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
+        plan: reconciled.evidence?.plan || domPlan,
         attachments: effectiveAttachments,
         tools,
         memory: {
@@ -3938,6 +4826,7 @@ class ContentScriptCoordinator {
       contextState.observables.domMessagesCount = rawDomMessages.length;
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
       contextState.observables.network = networkHealth;
+      contextState.observables.plan = winningPlan;
 
       if (apiError) {
         contextState.observables.apiError = apiError;

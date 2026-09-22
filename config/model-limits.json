@@ -1,115 +1,484 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.0.0",
-  "lastUpdated": "2026-09-21",
+  "version": "2.0.0",
+  "lastUpdated": "2026-09-22",
+  "metadata": {
+    "name": "ChatGPT Context Monitor - Model & Plan Context Limits Database",
+    "description": "Verified model and subscription tier context limits for ChatGPT Web product interface vs OpenAI Developer API.",
+    "version": "2.0.0",
+    "schemaVersion": "2.0",
+    "refreshable": true,
+    "sourceUrl": "https://platform.openai.com/docs/models",
+    "lastVerified": "2026-09-22"
+  },
+  "plans": {
+    "free": {
+      "id": "free",
+      "displayName": "Free",
+      "tier": "free",
+      "description": "Standard free ChatGPT account with dynamic rate limits and smaller active context window.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "go": {
+      "id": "go",
+      "displayName": "Go",
+      "tier": "go",
+      "description": "Low-cost plan for heavy free-tier users. Context window unconfirmed by official documentation.",
+      "source": "OpenAI Help Center rollout preview (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "plus": {
+      "id": "plus",
+      "displayName": "Plus",
+      "tier": "plus",
+      "description": "Individual premium subscription with access to flagship models and 32k active conversation context.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "pro": {
+      "id": "pro",
+      "displayName": "Pro",
+      "tier": "pro",
+      "description": "High-tier subscription ($200/mo) with unlimited access to reasoning models and extended context handling.",
+      "source": "OpenAI Pro Announcement & Help Center (openai.com/index/introducing-chatgpt-pro)",
+      "lastVerified": "2026-09-20"
+    },
+    "team": {
+      "id": "team",
+      "displayName": "Team",
+      "tier": "team",
+      "description": "Workspace plan for teams with dedicated admin controls, data privacy, and 32k conversation context.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "business": {
+      "id": "business",
+      "displayName": "Business",
+      "tier": "business",
+      "description": "Mid-market business workspace plan with admin console, team management, and 32k context.",
+      "source": "OpenAI Help Center (help.openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "enterprise": {
+      "id": "enterprise",
+      "displayName": "Enterprise",
+      "tier": "enterprise",
+      "description": "Enterprise-grade tier with custom data retention, SSO, and 128k context window.",
+      "source": "OpenAI Enterprise Documentation (openai.com/index/chatgpt-enterprise)",
+      "lastVerified": "2026-09-20"
+    },
+    "edu": {
+      "id": "edu",
+      "displayName": "Edu",
+      "tier": "edu",
+      "description": "Educational institution tier built on ChatGPT Enterprise infrastructure with 128k context.",
+      "source": "OpenAI for Education Announcement (openai.com)",
+      "lastVerified": "2026-09-20"
+    },
+    "unknown": {
+      "id": "unknown",
+      "displayName": "Unknown Plan",
+      "tier": "unknown",
+      "description": "Subscription tier could not be reliably determined from observable signals.",
+      "source": "Unobservable or unauthenticated session",
+      "lastVerified": null
+    }
+  },
   "models": {
     "gpt-4o": {
       "displayName": "GPT-4o",
       "aliases": ["gpt-4o", "4o", "chatgpt-4o", "omni"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 16384,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o)",
-      "lastVerified": "2026-09-20",
-      "notes": "Flagship multimodal model with 128k token context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center & Community Reference (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Free tier 8K active conversation context window."
+        },
+        "go": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "Initial rollout preview; exact token limit unconfirmed by OpenAI documentation",
+          "lastVerified": "2026-09-20",
+          "notes": "Context limit marked UNKNOWN per zero-guessing rule."
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center & Announcement Reference (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Plus 32K active conversation turn context window."
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement & Documentation (openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Pro extended context access up to full 128K model capacity."
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Team 32K active conversation context window."
+        },
+        "business": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Business & Team Documentation (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Business 32K active conversation context window."
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com/index/chatgpt-enterprise)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Enterprise 128K context window."
+        },
+        "edu": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Edu Documentation (openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Edu 128K context window."
+        }
+      }
     },
     "gpt-4o-mini": {
       "displayName": "GPT-4o mini",
       "aliases": ["gpt-4o-mini", "4o-mini", "chatgpt-4o-mini"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 16384,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o-mini)",
-      "lastVerified": "2026-09-20",
-      "notes": "Fast, cost-efficient model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o-mini)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Free tier 8K active context window for mini model."
+        },
+        "go": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "Unconfirmed by OpenAI public documentation",
+          "lastVerified": "2026-09-20",
+          "notes": "Context limit marked UNKNOWN."
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Plus 32K context window."
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement & Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "business": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Business Documentation (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com/index/chatgpt-enterprise)",
+          "lastVerified": "2026-09-20"
+        },
+        "edu": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Edu Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-4.5": {
       "displayName": "GPT-4.5",
       "aliases": ["gpt-4.5", "gpt-4.5-preview", "4.5"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 16384,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-5-preview)",
-      "lastVerified": "2026-09-20",
-      "notes": "Large scale flagship model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-5-preview)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o1": {
       "displayName": "o1",
       "aliases": ["o1", "o1-full", "openai-o1", "reasoning"],
       "encoding": "o200k_base",
+      "apiContextLimit": 200000,
       "contextWindow": 200000,
       "maxOutput": 100000,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1)",
-      "lastVerified": "2026-09-20",
-      "notes": "Advanced reasoning model with 200k context window and up to 100k reasoning/output tokens."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o1)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Plus reasoning turn window."
+        },
+        "pro": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com/index/introducing-chatgpt-pro)",
+          "lastVerified": "2026-09-20",
+          "notes": "ChatGPT Pro unlimited o1 access with 200k context window."
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "business": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "edu": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Edu Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o1-mini": {
       "displayName": "o1-mini",
       "aliases": ["o1-mini", "openai-o1-mini"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 65536,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-mini)",
-      "lastVerified": "2026-09-20",
-      "notes": "Faster reasoning model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-mini)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o1-preview": {
       "displayName": "o1-preview",
       "aliases": ["o1-preview", "openai-o1-preview"],
       "encoding": "o200k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 32768,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-preview)",
-      "lastVerified": "2026-09-20",
-      "notes": "Initial reasoning preview model with 128k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-preview)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "o3-mini": {
       "displayName": "o3-mini",
       "aliases": ["o3-mini", "openai-o3-mini", "o3"],
       "encoding": "o200k_base",
+      "apiContextLimit": 200000,
       "contextWindow": 200000,
       "maxOutput": 100000,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o3-mini)",
-      "lastVerified": "2026-09-20",
-      "notes": "High-efficiency reasoning model with 200k context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/o3-mini)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "pro": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Pro Announcement (openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "team": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 200000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-4-turbo": {
       "displayName": "GPT-4 Turbo",
       "aliases": ["gpt-4-turbo", "gpt-4-turbo-preview", "turbo"],
       "encoding": "cl100k_base",
+      "apiContextLimit": 128000,
       "contextWindow": 128000,
       "maxOutput": 4096,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-turbo-and-gpt-4)",
-      "lastVerified": "2026-09-20",
-      "notes": "128k context window with 4k max output."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-turbo-and-gpt-4)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 32768,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "OpenAI Enterprise Documentation (openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-4": {
       "displayName": "GPT-4 (Legacy)",
       "aliases": ["gpt-4", "gpt-4-0613", "gpt-4-classic"],
       "encoding": "cl100k_base",
+      "apiContextLimit": 8192,
       "contextWindow": 8192,
       "maxOutput": 4096,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4)",
-      "lastVerified": "2026-09-20",
-      "notes": "Original GPT-4 with 8,192 token context window."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "plus": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     },
     "gpt-3.5-turbo": {
       "displayName": "GPT-3.5 Turbo",
       "aliases": ["gpt-3.5", "gpt-3.5-turbo", "3.5"],
       "encoding": "cl100k_base",
+      "apiContextLimit": 16385,
       "contextWindow": 16385,
       "maxOutput": 4096,
-      "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-3-5-turbo)",
-      "lastVerified": "2026-09-20",
-      "notes": "16k context window legacy model."
+      "apiSource": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-3-5-turbo)",
+      "apiLastVerified": "2026-09-20",
+      "productLimits": {
+        "free": {
+          "contextWindow": 8192,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        },
+        "plus": {
+          "contextWindow": 16385,
+          "status": "VERIFIED",
+          "source": "OpenAI Help Center (help.openai.com)",
+          "lastVerified": "2026-09-20"
+        }
+      }
     }
   },
   "productDisclaimers": {
-    "apiVsProduct": "Model limits listed reflect the underlying OpenAI model context window. ChatGPT Web product interfaces may enforce dynamic conversation turn caps, subscription tier limits, or internal system overhead not exposed in the client.",
-    "freeTierLimits": "ChatGPT Free tier message limits are dynamic and managed server-side by OpenAI without a fixed client-side constant. Counters are never fabricated.",
+    "apiVsProduct": "CRITICAL: OpenAI API context limit reflects the raw developer engine capacity (e.g. 128K for GPT-4o). In the consumer/enterprise ChatGPT Web product, context limits are governed by the user's active subscription tier (e.g. Free 8K, Plus 32K, Enterprise 128K). The extension strictly avoids using the API context window as a substitute for product limits.",
+    "freeTierLimits": "ChatGPT Free tier context windows and rate limits are managed server-side by OpenAI without a fixed client constant. Never guess or fabricate unverified limits.",
     "unknownModelFallback": {
       "displayName": "Unknown Model",
       "encoding": "o200k_base",
+      "apiContextLimit": null,
       "contextWindow": null,
       "maxOutput": null,
       "source": "Unrecognized or custom model identifier",

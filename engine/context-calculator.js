@@ -91,8 +91,31 @@ export class ContextCalculator {
     // Total measurable context
     const totalMeasurableTokens = conversationTokens + attachmentTokens;
 
-    // Context window & utilization
-    const contextWindow = model.contextWindow || null;
+    // Resolve plan tier and source (Group F)
+    const planInput = input.plan;
+    let planTier = 'unknown';
+    let planSource = 'unknown';
+    if (typeof planInput === 'string') {
+      planTier = planInput;
+    } else if (planInput && typeof planInput === 'object') {
+      planTier = planInput.value || planInput.tier || 'unknown';
+      planSource = planInput.source || 'unknown';
+    } else if (model.planTier) {
+      planTier = model.planTier;
+    }
+
+    // Context window & utilization (Group F)
+    // Rule: Never invent a limit. If model is unknown or plan is unknown, contextWindow = null
+    let contextWindow = null;
+    if (model.id !== 'unknown') {
+      if (planTier !== 'unknown' && model.contextWindow) {
+        contextWindow = model.contextWindow;
+      } else if (input.plan === undefined && model.contextWindow) {
+        // Backward compatibility for standalone callers without plan context
+        contextWindow = model.contextWindow;
+      }
+    }
+
     let utilizationPercent = null;
     if (contextWindow && contextWindow > 0) {
       utilizationPercent = Math.min(100, Number(((totalMeasurableTokens / contextWindow) * 100).toFixed(1)));
@@ -102,7 +125,8 @@ export class ContextCalculator {
     const accuracy = {
       conversation: ContextClassifier.classifyConversation(Boolean(authoritative?.tokens)),
       model: ContextClassifier.classifyModel(model.id),
-      contextWindow: ContextClassifier.classifyLimit(contextWindow, Boolean(model.source)),
+      plan: ContextClassifier.classifyPlan(planTier),
+      contextWindow: ContextClassifier.classifyLimit(contextWindow, model.limitStatus === 'VERIFIED'),
       attachments: ContextClassifier.classifyAttachment(attachments.count, !attachments.hasUnknown),
       memory: ContextClassifier.classifyMemory(),
       tools: ContextClassifier.classifyTools(tools.observed),
@@ -120,10 +144,14 @@ export class ContextCalculator {
       completenessSource: Boolean(authoritative?.tokens) ? 'authoritative_api' : (isPartial ? 'dom_partial' : 'dom_complete')
     };
 
-    // Confidence evaluation with evidence-based factors (Group E)
+    // Confidence evaluation with evidence-based factors (Group E + F)
     const confidence = ConfidenceEngine.evaluate({
       isAuthoritative: Boolean(authoritative?.tokens),
-      isModelKnown: model.id !== 'unknown' && Boolean(contextWindow),
+      isModelKnown: model.id !== 'unknown',
+      isLimitVerified: Boolean(contextWindow) && model.limitStatus !== 'UNVERIFIED',
+      contextLimit: contextWindow,
+      planTier,
+      isPlanKnown: planTier !== 'unknown' && Boolean(planTier),
       modelDisplayName: model.displayName,
       messageCount: messages.length,
       attachmentCount: attachments.count,
@@ -136,16 +164,27 @@ export class ContextCalculator {
       conflicts: input.conflicts || []
     });
 
+    const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);
+
     return {
       timestamp: Date.now(),
       model: {
         id: model.id || 'unknown',
         displayName: model.displayName || 'Unknown Model',
         encoding: model.encoding || 'o200k_base',
+        apiContextLimit,
         contextWindow: contextWindow,
         maxOutput: model.maxOutput || null,
+        planTier,
+        limitStatus: model.limitStatus || (contextWindow ? 'VERIFIED' : 'UNKNOWN'),
         source: model.source || 'unverified',
         accuracy: accuracy.model
+      },
+      plan: {
+        tier: planTier,
+        displayName: planTier.charAt(0).toUpperCase() + planTier.slice(1),
+        source: planSource,
+        accuracy: accuracy.plan
       },
       tokens: {
         user: userTokens,
@@ -197,6 +236,18 @@ export class ContextCalculator {
           value: model.id,
           source: model.source || 'model_db',
           evidenceType: model.id !== 'unknown' ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+        },
+        plan: {
+          value: planTier,
+          source: planSource,
+          evidenceType: planTier !== 'unknown' ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+        },
+        limit: {
+          value: contextWindow,
+          apiLimit: apiContextLimit,
+          status: model.limitStatus || (contextWindow ? 'VERIFIED' : 'UNKNOWN'),
+          source: model.limitSource || 'model_db',
+          evidenceType: contextWindow ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
         },
         turns: {
           value: messages.length,

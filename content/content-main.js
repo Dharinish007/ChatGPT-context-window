@@ -10,6 +10,7 @@ import { ContextCalculator } from '../engine/context-calculator.js';
 import { EvidenceMerger, EvidenceType } from '../engine/evidence-merger.js';
 import { MessageExtractor } from './message-extractor.js';
 import { ModelDetector } from './model-detector.js';
+import { PlanDetector, normalizePlanTier, PlanTier } from './plan-detector.js';
 import { AttachmentDetector } from './attachment-detector.js';
 import { ToolDetector } from './tool-detector.js';
 import { OverlayUI } from './overlay-ui.js';
@@ -22,6 +23,7 @@ export class ContentScriptCoordinator {
     this.tokenizer = new Tokenizer();
     this.messageExtractor = new MessageExtractor();
     this.modelDetector = new ModelDetector(modelLimitsDb);
+    this.planDetector = new PlanDetector();
     this.conversationClient = new ConversationClient();
     this.attachmentDetector = new AttachmentDetector();
     this.toolDetector = new ToolDetector();
@@ -418,8 +420,28 @@ export class ContentScriptCoordinator {
         });
       }
 
+      // Plan candidates (Group F)
+      const planCandidates = [];
+      const netPlan = this.requestObserver.getObservedPlan();
+      if (netPlan && netPlan.value) {
+        planCandidates.push({
+          value: normalizePlanTier(netPlan.value),
+          source: 'network',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+      const domPlan = this.planDetector.detect(document);
+      if (domPlan && domPlan.value && domPlan.value !== PlanTier.UNKNOWN) {
+        planCandidates.push({
+          value: domPlan.value,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
       const reconciled = EvidenceMerger.reconcileState({
         modelCandidates,
+        planCandidates,
         turnCandidates,
         attachmentCandidates,
         toolCandidates,
@@ -427,18 +449,16 @@ export class ContentScriptCoordinator {
         networkHealth
       });
 
-      // Update model with winning reconciled model if available
-      if (reconciled.evidence?.model?.value) {
-        model = this.modelDetector.resolveModel(reconciled.evidence.model.value);
-      }
-      if (!model) {
-        model = domModel || this.modelDetector.resolveModel('unknown');
-      }
+      // Update model + plan-aware limits with winning evidence
+      const winningPlan = reconciled.evidence?.plan?.value || domPlan?.value || PlanTier.UNKNOWN;
+      const winningModelSlug = reconciled.evidence?.model?.value || (model && model.id) || (domModel && domModel.id) || 'unknown';
+      model = this.modelDetector.resolveModel(winningModelSlug, winningPlan);
 
       // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
+        plan: reconciled.evidence?.plan || domPlan,
         attachments: effectiveAttachments,
         tools,
         memory: {
@@ -458,6 +478,7 @@ export class ContentScriptCoordinator {
       contextState.observables.domMessagesCount = rawDomMessages.length;
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
       contextState.observables.network = networkHealth;
+      contextState.observables.plan = winningPlan;
 
       if (apiError) {
         contextState.observables.apiError = apiError;

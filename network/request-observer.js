@@ -38,6 +38,7 @@ export class RequestObserver {
     // Normalized Network Evidence State
     this.activeConversationId = null;
     this.observedModel = null; // { value: string, source: 'network', evidenceType: 'OBSERVED' }
+    this.observedPlan = null; // { value: string, source: 'network', evidenceType: 'OBSERVED' }
     this.pendingUserTurn = null; // { id, role: 'user', parts, text, source: 'network', evidenceType: 'OBSERVED' }
     this.activeStreamingTurn = null; // { id, role: 'assistant', parts, text, isStreaming: true, ... }
     this.observedTools = new Map(); // toolName -> { name, status, source: 'network', evidenceType: 'OBSERVED' }
@@ -152,6 +153,18 @@ export class RequestObserver {
           }
           if (typeof this.onConversationLoaded === 'function') {
             this.onConversationLoaded(payload);
+          }
+          break;
+
+        case 'ACCOUNT_PLAN_OBSERVED':
+          if (payload.planType) {
+            this.observedPlan = {
+              value: payload.planType,
+              source: 'network',
+              evidenceType: 'OBSERVED',
+              endpoint: payload.endpoint || null,
+              timestamp: Date.now()
+            };
           }
           break;
 
@@ -346,6 +359,14 @@ export class RequestObserver {
    */
   getObservedModel() {
     return this.observedModel;
+  }
+
+  /**
+   * Returns currently observed user plan tier with provenance, or null.
+   * @returns {{ value: string, source: string, evidenceType: string }|null}
+   */
+  getObservedPlan() {
+    return this.observedPlan;
   }
 
   /**

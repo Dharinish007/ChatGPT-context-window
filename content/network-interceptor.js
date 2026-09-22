@@ -469,6 +469,34 @@
           }
         }
 
+        // Handle account & plan observation: GET /backend-api/accounts/check or /backend-api/me
+        else if ((url.includes('/backend-api/accounts/check') || url.includes('/backend-api/me')) && method === 'GET') {
+          if (response.status === 200 && response.body && !response.bodyUsed) {
+            try {
+              const cloned = response.clone();
+              cloned.text().then(text => {
+                try {
+                  const data = JSON.parse(text);
+                  let planType = null;
+                  if (data.accounts) {
+                    const def = data.accounts.default || (Array.isArray(data.accounts) ? data.accounts[0] : Object.values(data.accounts)[0]);
+                    planType = def?.plan_type || def?.structure || data.plan_type;
+                  } else {
+                    planType = data.account_plan?.plan_type || data.plan_type;
+                  }
+                  if (planType) {
+                    dispatchNetworkEvent('ACCOUNT_PLAN_OBSERVED', {
+                      endpoint,
+                      planType: safeString(planType, 50),
+                      timestamp: Date.now()
+                    });
+                  }
+                } catch (_) {}
+              }).catch(() => {});
+            } catch (_) {}
+          }
+        }
+
         // Untracked / New backend endpoint detection
         else {
           dispatchNetworkEvent('UNSUPPORTED_ENDPOINT_OBSERVED', {

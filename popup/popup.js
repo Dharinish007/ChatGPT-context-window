@@ -36,9 +36,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderState(state) {
     if (!state) return;
 
-    // Model name & limit
-    const modelName = state.model?.displayName || 'Unknown Model';
-    modelNameEl.textContent = modelName;
+    // Model name & limit (Group F)
+    const planTier = state.model?.planTier || state.plan?.tier;
+    const planSuffix = (planTier && planTier !== 'unknown') ? ` (${planTier.toUpperCase()})` : '';
+    const rawModelName = state.model?.displayName || 'Unknown Model';
+    modelNameEl.textContent = `${rawModelName}${planSuffix}`;
 
     // Ground truth provenance & source
     const groundTruthSource = state.evidence?.turns?.source || state.evidence?.dataSource?.source || state.observables?.dataSource || 'dom';
@@ -53,9 +55,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     tokensCurrentEl.textContent = `~${currentTokensStr}`;
     tokensLimitEl.textContent = limitTokensStr;
 
-    // Percent & progress bar
-    const percent = state.utilization?.percentage ?? 0;
-    metricPercentEl.textContent = state.utilization?.formatted || '0%';
+    // Percent & progress bar (Unknown fallback handling)
+    const isLimitUnknown = state.utilization?.percentage === null || state.utilization?.percentage === undefined;
+    const percent = !isLimitUnknown ? state.utilization.percentage : 0;
+    metricPercentEl.textContent = state.utilization?.formatted || 'Unknown';
     progressFillEl.style.width = `${Math.min(100, Math.max(0, percent))}%`;
 
     // Progress bar and percent color

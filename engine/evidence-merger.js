@@ -148,11 +148,18 @@ export class EvidenceMerger {
       allConflicts.push(...toolResult.conflicts);
     }
 
+    // 5. Plan tier reconciliation (Group F)
+    const planResult = this.reconcileField('plan', input.planCandidates || []);
+    if (planResult.hasConflict) {
+      allConflicts.push(...planResult.conflicts);
+    }
+
     const completeness = input.completeness || {};
     const networkHealth = input.networkHealth || {};
 
     const evidence = {
       model: modelResult.winner,
+      plan: planResult.winner,
       turns: turnResult.winner,
       attachments: attachResult.winner,
       tools: toolResult.winner,
@@ -192,6 +199,13 @@ export class EvidenceMerger {
           evidenceType: input.tokens.contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
         }
       } : null,
+      limit: {
+        value: input.limit?.contextWindow ?? input.tokens?.contextWindow ?? null,
+        apiLimit: input.limit?.apiContextLimit ?? input.model?.apiContextLimit ?? null,
+        status: input.limit?.status || ((input.limit?.contextWindow ?? input.tokens?.contextWindow) ? 'VERIFIED' : 'UNKNOWN'),
+        source: input.limit?.source || 'model_db',
+        evidenceType: (input.limit?.contextWindow ?? input.tokens?.contextWindow) ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+      },
       serverContext: {
         value: 'UNOBSERVABLE',
         source: 'unknown',

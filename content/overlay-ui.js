@@ -89,7 +89,10 @@ export class OverlayUI {
     }
 
     const state = this.latestState;
-    const modelName = state?.model?.displayName || 'Detecting...';
+    const planTier = state?.model?.planTier || state?.plan?.tier;
+    const planSuffix = (planTier && planTier !== 'unknown') ? ` [${planTier.toUpperCase()}]` : '';
+    const rawModelName = state?.model?.displayName || 'Detecting...';
+    const modelName = `${rawModelName}${planSuffix}`;
     const totalTokensFormatted = state?.tokens?.formatted?.total || '0';
     const limitFormatted = state?.tokens?.formatted?.contextWindow || 'Unknown';
     const percent = state?.utilization?.percentage !== null && state?.utilization?.percentage !== undefined

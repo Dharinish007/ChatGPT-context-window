@@ -9,6 +9,7 @@ import { runNetworkObserverTests } from './unit/network-observer.test.js';
 import { runCompletenessTests } from './unit/completeness.test.js';
 import { runDomExtractorTests } from './dom/extractor.test.js';
 import { runEvidenceConfidenceTests } from './unit/evidence-confidence.test.js';
+import { runModelPlanLimitsTests } from './unit/model-plan-limits.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -59,6 +60,12 @@ console.log('');
 const r7 = runEvidenceConfidenceTests();
 totalPassed += r7.passed;
 totalFailed += r7.failed;
+console.log('');
+
+// 8. Model + Plan-Aware Context Limits tests (Group F)
+const r8 = runModelPlanLimitsTests();
+totalPassed += r8.passed;
+totalFailed += r8.failed;
 console.log('');
 
 const t1 = performance.now();
