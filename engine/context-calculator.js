@@ -51,15 +51,36 @@ export class ContextCalculator {
     const authoritative = input.authoritative || null;
     const isPartial = Boolean(input.isPartial);
 
-    // Sum message tokens by author role
+    // Sum message tokens by author role and track non-text parts
     let userTokens = 0;
     let assistantTokens = 0;
+    let nonTextPartsCount = 0;
+    const nonTextPartsList = [];
+
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      const msgTokens = msg.tokens || 0;
+
+      // Track non-text parts when provided
+      if (Array.isArray(msg.nonTextParts) && msg.nonTextParts.length > 0) {
+        nonTextPartsCount += msg.nonTextParts.length;
+        nonTextPartsList.push(...msg.nonTextParts);
+      } else if (Array.isArray(msg.parts)) {
+        for (const p of msg.parts) {
+          if (p && typeof p === 'object' && p.type && p.type !== 'text') {
+            nonTextPartsCount++;
+            nonTextPartsList.push({
+              type: p.type,
+              classification: p.classification || 'UNKNOWN'
+            });
+          }
+        }
+      }
+
       if (msg.role === 'user') {
-        userTokens += msg.tokens || 0;
+        userTokens += msgTokens;
       } else {
-        assistantTokens += msg.tokens || 0;
+        assistantTokens += msgTokens;
       }
     }
     const conversationTokens = userTokens + assistantTokens;
@@ -105,6 +126,7 @@ export class ContextCalculator {
       model: {
         id: model.id || 'unknown',
         displayName: model.displayName || 'Unknown Model',
+        encoding: model.encoding || 'o200k_base',
         contextWindow: contextWindow,
         maxOutput: model.maxOutput || null,
         source: model.source || 'unverified',
@@ -135,7 +157,9 @@ export class ContextCalculator {
         toolsObserved: tools.observed,
         toolsList: tools.list || [],
         memoryObserved: memory.observed,
-        isPartialConversation: isPartial
+        isPartialConversation: isPartial,
+        nonTextPartsCount,
+        nonTextPartsList
       },
       accuracy,
       confidence,

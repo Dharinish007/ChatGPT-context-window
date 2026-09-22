@@ -19,5 +19,8 @@
     "ai"
   ],
   "author": "ChatGPT Context Monitor Team",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "js-tiktoken": "^1.0.21"
+  }
 }

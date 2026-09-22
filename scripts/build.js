@@ -18,8 +18,39 @@ console.log('[Build] Packaging ChatGPT Context Monitor content script...');
 // Read model limits JSON
 const modelLimitsRaw = fs.readFileSync(path.join(rootDir, 'config', 'model-limits.json'), 'utf8');
 
+// Read js-tiktoken runtime and ranks
+const base64Code = fs.readFileSync(path.join(rootDir, 'node_modules', 'base64-js', 'index.js'), 'utf8')
+  .replace('exports.byteLength = byteLength', '')
+  .replace('exports.toByteArray = toByteArray', '')
+  .replace('exports.fromByteArray = fromByteArray', '');
+
+const chunkCode = fs.readFileSync(path.join(rootDir, 'node_modules', 'js-tiktoken', 'dist', 'chunk-VL2OQCWN.js'), 'utf8')
+  .replace("import base64 from 'base64-js';", '')
+  .replace(/export\s*\{[^}]+\};?/g, '');
+
+const cl100kRaw = fs.readFileSync(path.join(rootDir, 'node_modules', 'js-tiktoken', 'dist', 'ranks', 'cl100k_base.js'), 'utf8')
+  .replace('export default ', '');
+
+const o200kRaw = fs.readFileSync(path.join(rootDir, 'node_modules', 'js-tiktoken', 'dist', 'ranks', 'o200k_base.js'), 'utf8')
+  .replace('export default ', '');
+
+const tiktokenInlined = `
+  // --- Inlined js-tiktoken core & ranks ---
+  const base64 = (function() {
+    const exports = {};
+    ${base64Code}
+    return { toByteArray, fromByteArray };
+  })();
+
+  ${chunkCode}
+
+  const cl100k_base = ${cl100kRaw.trim()};
+  const o200k_base = ${o200kRaw.trim()};
+`;
+
 // Read modules
 const tokenizerCode = fs.readFileSync(path.join(rootDir, 'engine', 'tokenizer.js'), 'utf8')
+  .replace(/import\s+.*?from\s+.*?;/g, '')
   .replace(/export\s+/g, '');
 
 const classifierCode = fs.readFileSync(path.join(rootDir, 'engine', 'context-classifier.js'), 'utf8')
@@ -69,6 +100,9 @@ const bundledContentScript = `/**
 
   // Embedded verified model limits configuration
   const MODEL_LIMITS_DB = ${modelLimitsRaw.trim()};
+
+  // --- Inlined Tiktoken BPE Engine ---
+  ${tiktokenInlined}
 
   // --- Engine Layer ---
   ${tokenizerCode}

@@ -110,6 +110,7 @@ export class ModelDetector {
     return {
       id: normalized,
       displayName: rawString,
+      encoding: this.fallback.encoding || 'o200k_base',
       contextWindow: null,
       maxOutput: null,
       source: 'Unrecognized custom model or preview',

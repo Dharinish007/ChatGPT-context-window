@@ -73,22 +73,26 @@ export class ContentScriptCoordinator {
         this.tokenizer.clearCache();
       }
 
-      // 2. Extract conversation messages
+      // 2. Detect model specifications first for model-aware encoding
+      const model = this.modelDetector.detect(document);
+      const encoding = model?.encoding || 'o200k_base';
+
+      // 3. Extract conversation messages
       const rawMessages = this.messageExtractor.extractMessages(document);
 
-      // 3. Tokenize messages incrementally using LRU cache
+      // 4. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
       const tokenizedMessages = rawMessages.map(msg => {
-        const tokens = this.tokenizer.countMessageTokens(msg.id, msg.text);
+        const parts = msg.parts || [{ type: 'text', text: msg.text }];
+        const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, encoding);
         return {
           id: msg.id,
           role: msg.role,
-          tokens,
+          tokens: partsResult.tokens,
+          hasNonTextParts: partsResult.hasNonTextParts,
+          nonTextParts: partsResult.nonTextParts,
           isStreaming: msg.isStreaming
         };
       });
-
-      // 4. Detect model specifications
-      const model = this.modelDetector.detect(document);
 
       // 5. Detect attachments
       const attachments = this.attachmentDetector.detect(document);

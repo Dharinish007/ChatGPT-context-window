@@ -143,10 +143,25 @@ export class MessageExtractor {
       const isStreaming = turnEl.classList.contains('result-streaming') ||
                           Boolean(turnEl.querySelector('.result-streaming'));
 
+      const parts = [{ type: 'text', text }];
+
+      // Detect non-text attachments inside the turn if present
+      const fileEls = turnEl.querySelectorAll("[data-testid*='attachment'], [data-testid*='file'], .file-pill, img[alt*='Uploaded']");
+      if (fileEls && fileEls.length > 0) {
+        for (let f = 0; f < fileEls.length; f++) {
+          const isImg = fileEls[f].tagName === 'IMG' || Boolean(fileEls[f].querySelector('img'));
+          parts.push({
+            type: isImg ? 'image' : 'file',
+            classification: isImg ? 'ESTIMATED' : 'UNKNOWN'
+          });
+        }
+      }
+
       messages.push({
         id: turnId,
         role,
         text,
+        parts,
         isStreaming
       });
     }

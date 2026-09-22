@@ -6,6 +6,7 @@
     "gpt-4o": {
       "displayName": "GPT-4o",
       "aliases": ["gpt-4o", "4o", "chatgpt-4o", "omni"],
+      "encoding": "o200k_base",
       "contextWindow": 128000,
       "maxOutput": 16384,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o)",
@@ -15,6 +16,7 @@
     "gpt-4o-mini": {
       "displayName": "GPT-4o mini",
       "aliases": ["gpt-4o-mini", "4o-mini", "chatgpt-4o-mini"],
+      "encoding": "o200k_base",
       "contextWindow": 128000,
       "maxOutput": 16384,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4o-mini)",
@@ -24,6 +26,7 @@
     "gpt-4.5": {
       "displayName": "GPT-4.5",
       "aliases": ["gpt-4.5", "gpt-4.5-preview", "4.5"],
+      "encoding": "o200k_base",
       "contextWindow": 128000,
       "maxOutput": 16384,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-5-preview)",
@@ -33,6 +36,7 @@
     "o1": {
       "displayName": "o1",
       "aliases": ["o1", "o1-full", "openai-o1", "reasoning"],
+      "encoding": "o200k_base",
       "contextWindow": 200000,
       "maxOutput": 100000,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1)",
@@ -42,6 +46,7 @@
     "o1-mini": {
       "displayName": "o1-mini",
       "aliases": ["o1-mini", "openai-o1-mini"],
+      "encoding": "o200k_base",
       "contextWindow": 128000,
       "maxOutput": 65536,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-mini)",
@@ -51,6 +56,7 @@
     "o1-preview": {
       "displayName": "o1-preview",
       "aliases": ["o1-preview", "openai-o1-preview"],
+      "encoding": "o200k_base",
       "contextWindow": 128000,
       "maxOutput": 32768,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o1-preview)",
@@ -60,6 +66,7 @@
     "o3-mini": {
       "displayName": "o3-mini",
       "aliases": ["o3-mini", "openai-o3-mini", "o3"],
+      "encoding": "o200k_base",
       "contextWindow": 200000,
       "maxOutput": 100000,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/o3-mini)",
@@ -69,6 +76,7 @@
     "gpt-4-turbo": {
       "displayName": "GPT-4 Turbo",
       "aliases": ["gpt-4-turbo", "gpt-4-turbo-preview", "turbo"],
+      "encoding": "cl100k_base",
       "contextWindow": 128000,
       "maxOutput": 4096,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4-turbo-and-gpt-4)",
@@ -78,6 +86,7 @@
     "gpt-4": {
       "displayName": "GPT-4 (Legacy)",
       "aliases": ["gpt-4", "gpt-4-0613", "gpt-4-classic"],
+      "encoding": "cl100k_base",
       "contextWindow": 8192,
       "maxOutput": 4096,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-4)",
@@ -87,6 +96,7 @@
     "gpt-3.5-turbo": {
       "displayName": "GPT-3.5 Turbo",
       "aliases": ["gpt-3.5", "gpt-3.5-turbo", "3.5"],
+      "encoding": "cl100k_base",
       "contextWindow": 16385,
       "maxOutput": 4096,
       "source": "OpenAI Official Documentation (platform.openai.com/docs/models/gpt-3-5-turbo)",
@@ -99,6 +109,7 @@
     "freeTierLimits": "ChatGPT Free tier message limits are dynamic and managed server-side by OpenAI without a fixed client-side constant. Counters are never fabricated.",
     "unknownModelFallback": {
       "displayName": "Unknown Model",
+      "encoding": "o200k_base",
       "contextWindow": null,
       "maxOutput": null,
       "source": "Unrecognized or custom model identifier",

@@ -104,10 +104,39 @@ export function runContextEngineTests() {
   assert('Calculates assistant tokens correctly (2800)', calcResult.tokens.assistant === 2800);
   assert('Calculates conversation total correctly (4800)', calcResult.tokens.conversation === 4800);
   assert('Calculates total measurable tokens (4800 + 300 = 5100)', calcResult.tokens.totalMeasurable === 5100);
+  assert('Calculates model encoding as o200k_base for GPT-4o', calcResult.model.encoding === 'o200k_base');
   
   // Utilization: 5100 / 128000 = 3.98% -> ~4.0%
   assert('Calculates correct utilization percentage', calcResult.utilization.percentage === 4.0);
   assert('Enforces accuracy classification map on all outputs', calcResult.accuracy.conversation === 'ESTIMATED' && calcResult.accuracy.memory === 'UNKNOWN');
+
+  // 5. Message parts with non-text items
+  const calcWithParts = ContextCalculator.calculate({
+    messages: [
+      {
+        id: 'turn-1',
+        role: 'user',
+        tokens: 15,
+        parts: [
+          { type: 'text', text: 'Analyze this photo' },
+          { type: 'image', classification: 'ESTIMATED' }
+        ]
+      },
+      {
+        id: 'turn-2',
+        role: 'assistant',
+        tokens: 45,
+        parts: [
+          { type: 'text', text: 'Here is the analysis of your image.' }
+        ]
+      }
+    ],
+    model: gpt4o
+  });
+
+  assert('Correctly tracks non-text parts in observables', calcWithParts.observables.nonTextPartsCount === 1);
+  assert('Preserves non-text part classification as ESTIMATED without fabricating text tokens', calcWithParts.observables.nonTextPartsList[0].classification === 'ESTIMATED');
+  assert('Calculates exact text tokens for turns with parts (60)', calcWithParts.tokens.conversation === 60);
 
   return { passed, failed };
 }
