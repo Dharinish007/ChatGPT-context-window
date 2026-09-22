@@ -15,6 +15,8 @@ export const AccuracyClass = Object.freeze({
   UNKNOWN: 'UNKNOWN'
 });
 
+export const EvidenceType = AccuracyClass;
+
 export class ContextClassifier {
   /**
    * Classifies conversation message token accuracy.

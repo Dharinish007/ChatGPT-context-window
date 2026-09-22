@@ -7,6 +7,7 @@
 
 import { Tokenizer } from '../engine/tokenizer.js';
 import { ContextCalculator } from '../engine/context-calculator.js';
+import { EvidenceMerger, EvidenceType } from '../engine/evidence-merger.js';
 import { MessageExtractor } from './message-extractor.js';
 import { ModelDetector } from './model-detector.js';
 import { AttachmentDetector } from './attachment-detector.js';
@@ -172,11 +173,12 @@ export class ContentScriptCoordinator {
       let dataSource = 'dom';
       let apiError = null;
       let authMessagesCount = null;
+      let normalized = null;
 
       if (conversationId) {
         const authResult = await this.conversationClient.fetchConversation(conversationId);
         if (authResult.success && authResult.data) {
-          const normalized = this.conversationClient.normalizeConversation(authResult.data);
+          normalized = this.conversationClient.normalizeConversation(authResult.data);
           if (normalized.messages && normalized.messages.length > 0) {
             effectiveMessages = [...normalized.messages];
             authMessagesCount = normalized.messages.length;
@@ -340,7 +342,100 @@ export class ContentScriptCoordinator {
         completenessSource
       };
 
-      // 9. Calculate context metrics
+      // 9. Multi-Source Candidate Assembly & Evidence Reconciliation (Group E)
+      const networkHealth = this.requestObserver.getHealth();
+
+      const modelCandidates = [];
+      if (normalized?.modelSlug) {
+        modelCandidates.push({
+          value: normalized.modelSlug,
+          source: 'conversation_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
+      if (netModel && netModel.value) {
+        modelCandidates.push({
+          value: netModel.value,
+          source: 'network',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+      const domModel = this.modelDetector.detect(document);
+      if (domModel && domModel.id && domModel.id !== 'unknown') {
+        modelCandidates.push({
+          value: domModel.id,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const turnCandidates = [];
+      if (authMessagesCount !== null) {
+        turnCandidates.push({
+          value: authMessagesCount,
+          source: 'conversation_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
+      if (rawDomMessages && rawDomMessages.length > 0) {
+        turnCandidates.push({
+          value: rawDomMessages.length,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const attachmentCandidates = [];
+      if (normalized?.attachments) {
+        attachmentCandidates.push({
+          value: normalized.attachments.count,
+          source: 'conversation_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
+      const domAttachments = this.attachmentDetector.detect(document);
+      if (domAttachments) {
+        attachmentCandidates.push({
+          value: domAttachments.count,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const toolCandidates = [];
+      if (netTools.length > 0) {
+        toolCandidates.push({
+          value: netTools.map(t => t.name).join(','),
+          source: 'network',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+      if (domTools.list.length > 0) {
+        toolCandidates.push({
+          value: domTools.list.map(t => t.type).join(','),
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const reconciled = EvidenceMerger.reconcileState({
+        modelCandidates,
+        turnCandidates,
+        attachmentCandidates,
+        toolCandidates,
+        completeness,
+        networkHealth
+      });
+
+      // Update model with winning reconciled model if available
+      if (reconciled.evidence?.model?.value) {
+        model = this.modelDetector.resolveModel(reconciled.evidence.model.value);
+      }
+      if (!model) {
+        model = domModel || this.modelDetector.resolveModel('unknown');
+      }
+
+      // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
@@ -351,11 +446,13 @@ export class ContentScriptCoordinator {
           enabled: true
         },
         completeness,
-        isPartial: !conversationComplete
+        isPartial: !conversationComplete,
+        evidence: reconciled.evidence,
+        conflicts: reconciled.conflicts,
+        networkHealth
       });
 
       // Attach authoritative & network observables
-      const networkHealth = this.requestObserver.getHealth();
       contextState.observables.dataSource = dataSource;
       contextState.observables.conversationId = conversationId;
       contextState.observables.domMessagesCount = rawDomMessages.length;
@@ -366,32 +463,8 @@ export class ContentScriptCoordinator {
         contextState.observables.apiError = apiError;
       }
 
-      // 10. Stamped Epistemic Evidence Model
-      contextState.evidence = {
-        dataSource: {
-          value: dataSource,
-          source: dataSource === 'authoritative' ? 'authoritative_api' : (dataSource === 'dom_fallback' ? 'dom_fallback' : 'dom'),
-          evidenceType: dataSource === 'authoritative' ? 'EXACT' : 'OBSERVED'
-        },
-        model: {
-          value: model.id,
-          source: modelProvenance.source,
-          evidenceType: 'OBSERVED'
-        },
-        completeness: {
-          value: conversationComplete ? 'COMPLETE' : 'PARTIAL',
-          source: completenessSource,
-          evidenceType: 'OBSERVED',
-          domIsPartial,
-          virtualizationGap
-        },
-        networkHealth: {
-          value: networkHealth.networkAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
-          source: 'network',
-          evidenceType: 'OBSERVED',
-          details: networkHealth
-        }
-      };
+      contextState.evidence = reconciled.evidence;
+      contextState.conflicts = reconciled.conflicts;
 
       this.latestState = contextState;
 

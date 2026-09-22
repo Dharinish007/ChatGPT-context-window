@@ -5,7 +5,7 @@
  * tools, and model limits to calculate context utilization and breakdown statistics.
  */
 
-import { ContextClassifier, AccuracyClass } from './context-classifier.js';
+import { ContextClassifier, AccuracyClass, EvidenceType } from './context-classifier.js';
 import { ConfidenceEngine } from './confidence-engine.js';
 
 export class ContextCalculator {
@@ -110,17 +110,6 @@ export class ContextCalculator {
       total: ContextClassifier.classifyTotal(Boolean(authoritative?.tokens))
     };
 
-    // Confidence evaluation
-    const confidence = ConfidenceEngine.evaluate({
-      isAuthoritative: Boolean(authoritative?.tokens),
-      isModelKnown: model.id !== 'unknown' && Boolean(contextWindow),
-      messageCount: messages.length,
-      attachmentCount: attachments.count,
-      hasUnknownAttachments: attachments.hasUnknown,
-      hasObservedTools: tools.observed,
-      isPartialConversation: isPartial
-    });
-
     const completenessInput = input.completeness || null;
     const completeness = completenessInput || {
       conversationComplete: !isPartial,
@@ -130,6 +119,22 @@ export class ContextCalculator {
       virtualizationGap: 0,
       completenessSource: Boolean(authoritative?.tokens) ? 'authoritative_api' : (isPartial ? 'dom_partial' : 'dom_complete')
     };
+
+    // Confidence evaluation with evidence-based factors (Group E)
+    const confidence = ConfidenceEngine.evaluate({
+      isAuthoritative: Boolean(authoritative?.tokens),
+      isModelKnown: model.id !== 'unknown' && Boolean(contextWindow),
+      modelDisplayName: model.displayName,
+      messageCount: messages.length,
+      attachmentCount: attachments.count,
+      hasUnknownAttachments: attachments.hasUnknown,
+      hasObservedTools: tools.observed,
+      isPartialConversation: isPartial,
+      completenessSource: completeness.completenessSource,
+      isNetworkActive: Boolean(input.networkHealth?.networkAvailable),
+      encoding: model.encoding || 'o200k_base',
+      conflicts: input.conflicts || []
+    });
 
     return {
       timestamp: Date.now(),
@@ -187,6 +192,65 @@ export class ContextCalculator {
       },
       accuracy,
       confidence,
+      evidence: input.evidence || {
+        model: {
+          value: model.id,
+          source: model.source || 'model_db',
+          evidenceType: model.id !== 'unknown' ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+        },
+        turns: {
+          value: messages.length,
+          source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'dom',
+          evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.OBSERVED
+        },
+        attachments: {
+          value: attachments.count,
+          source: attachments.source || 'dom',
+          evidenceType: attachments.count > 0 ? (attachments.hasUnknown ? EvidenceType.ESTIMATED : EvidenceType.OBSERVED) : EvidenceType.OBSERVED
+        },
+        tools: {
+          value: tools.list.map(t => t.type || t.label).join(','),
+          source: tools.source || 'dom',
+          evidenceType: tools.observed ? EvidenceType.OBSERVED : EvidenceType.OBSERVED
+        },
+        tokens: {
+          user: {
+            value: userTokens,
+            source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'tokenizer',
+            evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+          },
+          assistant: {
+            value: assistantTokens,
+            source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'tokenizer',
+            evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+          },
+          total: {
+            value: totalMeasurableTokens,
+            source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'tokenizer',
+            evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+          },
+          contextWindow: {
+            value: contextWindow,
+            source: 'model_db',
+            evidenceType: contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+          }
+        },
+        completeness: {
+          value: completeness.conversationComplete ? 'COMPLETE' : 'PARTIAL',
+          source: completeness.completenessSource,
+          evidenceType: completeness.completenessSource === 'authoritative_api' ? EvidenceType.EXACT : EvidenceType.OBSERVED,
+          domIsPartial: completeness.domIsPartial,
+          virtualizationGap: completeness.virtualizationGap
+        },
+        serverContext: {
+          value: 'UNOBSERVABLE',
+          source: 'unknown',
+          evidenceType: EvidenceType.UNKNOWN
+        },
+        conflicts: input.conflicts || [],
+        hasConflicts: Boolean(input.conflicts && input.conflicts.length > 0)
+      },
+      conflicts: input.conflicts || [],
       limitations: [
         'Visible conversation text is not the complete prompt submitted to the model.',
         'Hidden server-side system prompts, developer instructions, and runtime metadata are not measurable from the client.',

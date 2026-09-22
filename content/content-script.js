@@ -880,6 +880,8 @@ const AccuracyClass = Object.freeze({
   UNKNOWN: 'UNKNOWN'
 });
 
+const EvidenceType = AccuracyClass;
+
 class ContextClassifier {
   /**
    * Classifies conversation message token accuracy.
@@ -964,10 +966,243 @@ class ContextClassifier {
 
 
   /**
- * ChatGPT Context Monitor - Confidence Engine
+ * ChatGPT Context Monitor - Evidence Merger & Reconciliation Layer
  * 
- * Computes an honest confidence score (HIGH, MEDIUM, LOW) along with an
- * explanatory rationale based on measurable observables vs unmeasurable unknowns.
+ * Reconciles multi-source observations across Authoritative API, Network, DOM,
+ * and local inference. Strictly enforces source precedence and records disagreements
+ * rather than silently discarding conflicting evidence.
+ * 
+ * Precedence Order:
+ * Authoritative API (conversation_api) > Network (network) > DOM (dom) > Local Inference (tokenizer/model_db/heuristic)
+ */
+
+const EvidenceType = Object.freeze({
+  EXACT: 'EXACT',
+  OBSERVED: 'OBSERVED',
+  ESTIMATED: 'ESTIMATED',
+  UNKNOWN: 'UNKNOWN'
+});
+
+const SourcePriority = Object.freeze({
+  conversation_api: 4,
+  authoritative_api: 4,
+  authoritative: 4,
+  network: 3,
+  dom: 2,
+  dom_complete: 2,
+  dom_partial: 2,
+  model_db: 1,
+  tokenizer: 1,
+  heuristic: 1,
+  unknown: 0
+});
+
+class EvidenceMerger {
+  /**
+   * Reconciles multiple observations for a single property based on source priority.
+   * Detects disagreements and tracks winning vs discarded evidence.
+   * 
+   * @param {string} fieldName - Property name being reconciled
+   * @param {Array<{ value: any, source: string, evidenceType: string }>} candidates
+   * @returns {{
+   *   winner: { value: any, source: string, evidenceType: string }|null,
+   *   conflicts: Array<{ field: string, winning: Object, discarded: Object, reason: string }>,
+   *   hasConflict: boolean
+   * }}
+   */
+  static reconcileField(fieldName, candidates = []) {
+    const validCandidates = candidates.filter(c => 
+      c && 
+      c.value !== null && 
+      c.value !== undefined && 
+      c.value !== 'unknown' && 
+      c.value !== ''
+    );
+    if (validCandidates.length === 0) {
+      return {
+        winner: {
+          value: null,
+          source: 'unknown',
+          evidenceType: EvidenceType.UNKNOWN
+        },
+        conflicts: [],
+        hasConflict: false
+      };
+    }
+
+    // Sort candidates by SourcePriority descending
+    validCandidates.sort((a, b) => {
+      const pA = SourcePriority[a.source] ?? 0;
+      const pB = SourcePriority[b.source] ?? 0;
+      return pB - pA;
+    });
+
+    const winner = validCandidates[0];
+    const conflicts = [];
+
+    // Check for meaningful disagreements among candidates with priority >= 2
+    for (let i = 1; i < validCandidates.length; i++) {
+      const other = validCandidates[i];
+      const otherPriority = SourcePriority[other.source] ?? 0;
+      if (otherPriority < 2) continue; // Ignore low-confidence heuristics
+
+      const isDisagreement = this._isDisagreement(fieldName, winner.value, other.value);
+      if (isDisagreement) {
+        conflicts.push({
+          field: fieldName,
+          winning: {
+            value: winner.value,
+            source: winner.source,
+            evidenceType: winner.evidenceType
+          },
+          discarded: {
+            value: other.value,
+            source: other.source,
+            evidenceType: other.evidenceType
+          },
+          reason: `Higher priority source (${winner.source}) superseded (${other.source}) with differing value`
+        });
+      }
+    }
+
+    return {
+      winner,
+      conflicts,
+      hasConflict: conflicts.length > 0
+    };
+  }
+
+  /**
+   * Reconciles all observable context domains and returns complete evidence state.
+   * 
+   * @param {Object} input
+   * @param {Array<Object>} [input.modelCandidates]
+   * @param {Array<Object>} [input.turnCandidates]
+   * @param {Array<Object>} [input.toolCandidates]
+   * @param {Array<Object>} [input.attachmentCandidates]
+   * @param {Object} [input.completeness]
+   * @param {Object} [input.networkHealth]
+   * @returns {{
+   *   evidence: Object,
+   *   conflicts: Array<Object>,
+   *   hasConflicts: boolean
+   * }}
+   */
+  static reconcileState(input = {}) {
+    const allConflicts = [];
+
+    // 1. Model reconciliation
+    const modelResult = this.reconcileField('model', input.modelCandidates || []);
+    if (modelResult.hasConflict) {
+      allConflicts.push(...modelResult.conflicts);
+    }
+
+    // 2. Turns / Messages count reconciliation
+    const turnResult = this.reconcileField('turns', input.turnCandidates || []);
+    if (turnResult.hasConflict) {
+      allConflicts.push(...turnResult.conflicts);
+    }
+
+    // 3. Attachments reconciliation
+    const attachResult = this.reconcileField('attachments', input.attachmentCandidates || []);
+    if (attachResult.hasConflict) {
+      allConflicts.push(...attachResult.conflicts);
+    }
+
+    // 4. Tools reconciliation
+    const toolResult = this.reconcileField('tools', input.toolCandidates || []);
+    if (toolResult.hasConflict) {
+      allConflicts.push(...toolResult.conflicts);
+    }
+
+    const completeness = input.completeness || {};
+    const networkHealth = input.networkHealth || {};
+
+    const evidence = {
+      model: modelResult.winner,
+      turns: turnResult.winner,
+      attachments: attachResult.winner,
+      tools: toolResult.winner,
+      completeness: {
+        value: completeness.conversationComplete ? 'COMPLETE' : 'PARTIAL',
+        source: completeness.completenessSource || 'dom_complete',
+        evidenceType: completeness.completenessSource === 'authoritative_api' ? EvidenceType.EXACT : EvidenceType.OBSERVED,
+        domIsPartial: Boolean(completeness.domIsPartial),
+        virtualizationGap: completeness.virtualizationGap || 0
+      },
+      network: {
+        value: networkHealth.networkAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
+        source: 'network',
+        evidenceType: EvidenceType.OBSERVED,
+        activeStreams: networkHealth.activeStreamsCount || 0,
+        errors: networkHealth.interceptionErrors || 0
+      },
+      tokens: input.tokens ? {
+        user: {
+          value: input.tokens.user ?? 0,
+          source: input.isAuthoritative ? 'conversation_api' : 'tokenizer',
+          evidenceType: input.isAuthoritative ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+        },
+        assistant: {
+          value: input.tokens.assistant ?? 0,
+          source: input.isAuthoritative ? 'conversation_api' : 'tokenizer',
+          evidenceType: input.isAuthoritative ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+        },
+        total: {
+          value: input.tokens.totalMeasurable ?? input.tokens.conversation ?? 0,
+          source: input.isAuthoritative ? 'conversation_api' : 'tokenizer',
+          evidenceType: input.isAuthoritative ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+        },
+        contextWindow: {
+          value: input.tokens.contextWindow ?? null,
+          source: 'model_db',
+          evidenceType: input.tokens.contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+        }
+      } : null,
+      serverContext: {
+        value: 'UNOBSERVABLE',
+        source: 'unknown',
+        evidenceType: EvidenceType.UNKNOWN
+      },
+      conflicts: allConflicts,
+      hasConflicts: allConflicts.length > 0
+    };
+
+    return {
+      evidence,
+      conflicts: allConflicts,
+      hasConflicts: allConflicts.length > 0
+    };
+  }
+
+  /**
+   * Determines if two values constitute a material disagreement.
+   * @private
+   */
+  static _isDisagreement(field, valA, valB) {
+    if (valA === valB) return false;
+    if (typeof valA === 'string' && typeof valB === 'string') {
+      return valA.trim().toLowerCase() !== valB.trim().toLowerCase();
+    }
+    if (typeof valA === 'number' && typeof valB === 'number') {
+      return valA !== valB;
+    }
+    return true;
+  }
+}
+
+
+  /**
+ * ChatGPT Context Monitor - Confidence Engine (Group E Redesign)
+ * 
+ * Computes an honest, explainable, evidence-grounded measurement confidence score.
+ * Evaluates the quality, completeness, and agreement of observable data sources.
+ * 
+ * Non-negotiable principles:
+ * - Reflects MEASUREMENT confidence (accuracy of observable tokens), NOT hidden server state.
+ * - Distinguishes Observable Context Confidence vs Complete Server Context.
+ * - Explains all positive (+) and negative (-) confidence drivers.
+ * - Dynamically reacts to source conflicts, virtualization, tool overhead, and network health.
  */
 
 const ConfidenceLevel = Object.freeze({
@@ -978,80 +1213,192 @@ const ConfidenceLevel = Object.freeze({
 
 class ConfidenceEngine {
   /**
-   * Evaluates context measurement confidence.
+   * Evaluates context measurement confidence based on observable evidence quality.
    * 
    * @param {Object} params
-   * @param {boolean} params.isAuthoritative - True if exact API usage metadata exists
-   * @param {boolean} params.isModelKnown - True if active model was identified in config
-   * @param {number} params.messageCount - Number of observable message turns
-   * @param {number} params.attachmentCount - Number of attached files
-   * @param {boolean} params.hasUnknownAttachments - True if attachments cannot be tokenized
-   * @param {boolean} params.hasObservedTools - True if web search, python, memory, or MCP was invoked
-   * @param {boolean} params.isPartialConversation - True if older messages could be truncated
-   * @returns {{ level: string, score: number, reasons: string[] }}
+   * @param {boolean} [params.isAuthoritative=false] - True if exact API usage tokens provided
+   * @param {boolean} [params.isModelKnown=true] - True if model context window is verified
+   * @param {string} [params.modelDisplayName] - Resolved model name
+   * @param {number} [params.messageCount=0] - Number of observable turns
+   * @param {number} [params.attachmentCount=0] - Number of attachments
+   * @param {boolean} [params.hasUnknownAttachments=false] - True if non-text files are present
+   * @param {boolean} [params.hasObservedTools=false] - True if search/python/tools were executed
+   * @param {boolean} [params.isPartialConversation=false] - True if DOM view is virtualized/partial
+   * @param {string} [params.completenessSource='dom_complete'] - Source of completeness data
+   * @param {boolean} [params.isNetworkActive=false] - True if network interception is operational
+   * @param {string} [params.encoding='o200k_base'] - BPE tokenizer encoding
+   * @param {Array<Object>} [params.conflicts=[]] - Conflicting evidence between sources
+   * @returns {{
+   *   level: string,
+   *   score: number,
+   *   percentage: number,
+   *   reasons: string[],
+   *   factors: Array<{ type: 'positive' | 'negative', text: string }>,
+   *   observableConfidence: Object,
+   *   serverContextCompleteness: Object
+   * }}
    */
   static evaluate(params = {}) {
     const {
       isAuthoritative = false,
       isModelKnown = true,
+      modelDisplayName = '',
       messageCount = 0,
       attachmentCount = 0,
       hasUnknownAttachments = false,
       hasObservedTools = false,
-      isPartialConversation = false
+      isPartialConversation = false,
+      completenessSource = 'dom_complete',
+      isNetworkActive = false,
+      encoding = 'o200k_base',
+      conflicts = []
     } = params;
 
-    // Direct exact usage metadata always yields High confidence
+    // 1. Authoritative exact system metadata (100% confidence)
     if (isAuthoritative) {
       return {
         level: ConfidenceLevel.HIGH,
         score: 1.0,
-        reasons: ['Authoritative usage metadata provided directly by system']
+        percentage: 100,
+        reasons: ['Authoritative usage metadata provided directly by system'],
+        factors: [
+          { type: 'positive', text: 'Authoritative exact usage metadata provided directly by system' },
+          { type: 'positive', text: `Verified model context limits (${modelDisplayName || 'Verified Model'})` }
+        ],
+        observableConfidence: {
+          level: ConfidenceLevel.HIGH,
+          score: 1.0,
+          percentage: 100
+        },
+        serverContextCompleteness: {
+          status: 'EXACT_USAGE',
+          isLowerBound: false,
+          limitations: []
+        }
       };
     }
 
-    let score = 0.85;
-    const reasons = [];
+    // 2. Client-side Observable Evidence Evaluation
+    let score = 0.83; // Base score for verified client-side observation
+    const factors = [];
 
-    if (!isModelKnown) {
-      score -= 0.40;
-      reasons.push('Model not recognized or context window limit unknown');
+    // --- Factor A: Conversation Completeness & Ground Truth Source ---
+    if (completenessSource === 'authoritative_api') {
+      score += 0.10;
+      factors.push({ type: 'positive', text: 'Full authoritative conversation' });
+    } else if (completenessSource === 'in_flight_stream') {
+      score += 0.08;
+      factors.push({ type: 'positive', text: 'Authoritative base with live streaming turn' });
+    } else if (completenessSource === 'dom_complete') {
+      score += 0.05;
+      factors.push({ type: 'positive', text: 'Complete active session turn tree in DOM' });
     }
 
     if (isPartialConversation) {
       score -= 0.25;
-      reasons.push('Conversation is partially loaded / virtualized in DOM; count is lower bound');
+      factors.push({ type: 'negative', text: 'Conversation is partially loaded / virtualized in DOM; count is lower bound' });
     }
 
+    // --- Ground Truth Source Availability (Fallback Mode) ---
+    if (completenessSource !== 'authoritative_api' && completenessSource !== 'in_flight_stream') {
+      score -= 0.10;
+      factors.push({ type: 'negative', text: 'Authoritative conversation API unavailable; relying on DOM observation' });
+    }
+
+    // --- Factor B: Tokenization Reliability ---
+    factors.push({ type: 'positive', text: 'Exact tokenizer' });
+
+    // --- Factor C: Network Interception ---
+    if (isNetworkActive) {
+      score += 0.02;
+      factors.push({ type: 'positive', text: 'Network active' });
+    } else if (completenessSource !== 'authoritative_api') {
+      score -= 0.04;
+      factors.push({ type: 'negative', text: 'Network interception unavailable' });
+    }
+
+    // --- Factor D: Multi-Source Agreement vs Disagreements ---
+    if (conflicts && conflicts.length > 0) {
+      const conflictPenalty = Math.min(0.20, conflicts.length * 0.08);
+      score -= conflictPenalty;
+      for (const c of conflicts) {
+        factors.push({
+          type: 'negative',
+          text: `Source conflict on ${c.field}: ${c.winning.source} (${c.winning.value}) vs ${c.discarded.source} (${c.discarded.value})`
+        });
+      }
+    } else if (completenessSource === 'authoritative_api' || (isNetworkActive && completenessSource === 'dom_complete')) {
+      score += 0.05;
+      factors.push({ type: 'positive', text: 'DOM/API agreement' });
+    }
+
+    // --- Factor E: Model Identity & Limits Verification ---
+    if (isModelKnown) {
+      if (!factors.some(f => f.text === 'DOM/API agreement')) {
+        score += 0.05;
+      }
+    } else {
+      score -= 0.40;
+      factors.push({ type: 'negative', text: 'Model not recognized or context window limit unknown' });
+    }
+
+    // --- Factor F: Attachments Knowledge ---
     if (hasUnknownAttachments && attachmentCount > 0) {
       score -= 0.15;
-      reasons.push(`${attachmentCount} attachment(s) processed internally without observable token size`);
+      factors.push({ type: 'negative', text: `${attachmentCount} attachment(s) processed internally without observable token size` });
+    } else if (attachmentCount > 0) {
+      factors.push({ type: 'positive', text: 'Attachments observed with vision token calibration' });
     }
 
+    // --- Factor G: Tool / Search Execution ---
     if (hasObservedTools) {
-      score -= 0.15;
-      reasons.push('External tools / web search / memory executed with unobservable system prompts');
+      score -= 0.04;
+      factors.push({ type: 'negative', text: 'Tool internal overhead unknown' });
     }
 
+    // --- Factor H: Empty Conversation Detection ---
     if (messageCount === 0) {
-      score = Math.min(score, 0.5);
-      reasons.push('No conversation messages currently detected in DOM');
+      score = Math.min(score, 0.50);
+      factors.push({ type: 'negative', text: 'No conversation messages currently detected in DOM' });
     }
 
-    // Determine categorical level
+    // Bound final score between 0.10 and 1.00
+    const finalScore = Math.max(0.10, Math.min(1.0, Number(score.toFixed(2))));
+    const percentage = Math.round(finalScore * 100);
+
+    // Categorical classification
     let level;
-    if (score >= 0.75) {
+    if (finalScore >= 0.75) {
       level = ConfidenceLevel.HIGH;
-    } else if (score >= 0.50) {
+    } else if (finalScore >= 0.50) {
       level = ConfidenceLevel.MEDIUM;
     } else {
       level = ConfidenceLevel.LOW;
     }
 
+    // Traditional reasons format for backward compatibility
+    const reasons = factors.map(f => (f.type === 'positive' ? `+ ${f.text}` : `- ${f.text}`));
+
     return {
       level,
-      score: Math.max(0.1, Math.min(1.0, Number(score.toFixed(2)))),
-      reasons: reasons.length > 0 ? reasons : ['Clean conversation text with verified model context limits']
+      score: finalScore,
+      percentage,
+      reasons,
+      factors,
+      observableConfidence: {
+        level,
+        score: finalScore,
+        percentage
+      },
+      serverContextCompleteness: {
+        status: isPartialConversation ? 'LOWER_BOUND' : 'PARTIAL_OBSERVABILITY',
+        isLowerBound: Boolean(isPartialConversation),
+        limitations: [
+          'Server-side system instructions and developer prompts are not exposed in client responses.',
+          'RAG / memory embeddings vector retrieval overhead remains unobservable from the client.',
+          'Exact internal tool schemas injected by OpenAI remain classified as UNKNOWN.'
+        ]
+      }
     };
   }
 }
@@ -1169,17 +1516,6 @@ class ContextCalculator {
       total: ContextClassifier.classifyTotal(Boolean(authoritative?.tokens))
     };
 
-    // Confidence evaluation
-    const confidence = ConfidenceEngine.evaluate({
-      isAuthoritative: Boolean(authoritative?.tokens),
-      isModelKnown: model.id !== 'unknown' && Boolean(contextWindow),
-      messageCount: messages.length,
-      attachmentCount: attachments.count,
-      hasUnknownAttachments: attachments.hasUnknown,
-      hasObservedTools: tools.observed,
-      isPartialConversation: isPartial
-    });
-
     const completenessInput = input.completeness || null;
     const completeness = completenessInput || {
       conversationComplete: !isPartial,
@@ -1189,6 +1525,22 @@ class ContextCalculator {
       virtualizationGap: 0,
       completenessSource: Boolean(authoritative?.tokens) ? 'authoritative_api' : (isPartial ? 'dom_partial' : 'dom_complete')
     };
+
+    // Confidence evaluation with evidence-based factors (Group E)
+    const confidence = ConfidenceEngine.evaluate({
+      isAuthoritative: Boolean(authoritative?.tokens),
+      isModelKnown: model.id !== 'unknown' && Boolean(contextWindow),
+      modelDisplayName: model.displayName,
+      messageCount: messages.length,
+      attachmentCount: attachments.count,
+      hasUnknownAttachments: attachments.hasUnknown,
+      hasObservedTools: tools.observed,
+      isPartialConversation: isPartial,
+      completenessSource: completeness.completenessSource,
+      isNetworkActive: Boolean(input.networkHealth?.networkAvailable),
+      encoding: model.encoding || 'o200k_base',
+      conflicts: input.conflicts || []
+    });
 
     return {
       timestamp: Date.now(),
@@ -1246,6 +1598,65 @@ class ContextCalculator {
       },
       accuracy,
       confidence,
+      evidence: input.evidence || {
+        model: {
+          value: model.id,
+          source: model.source || 'model_db',
+          evidenceType: model.id !== 'unknown' ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+        },
+        turns: {
+          value: messages.length,
+          source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'dom',
+          evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.OBSERVED
+        },
+        attachments: {
+          value: attachments.count,
+          source: attachments.source || 'dom',
+          evidenceType: attachments.count > 0 ? (attachments.hasUnknown ? EvidenceType.ESTIMATED : EvidenceType.OBSERVED) : EvidenceType.OBSERVED
+        },
+        tools: {
+          value: tools.list.map(t => t.type || t.label).join(','),
+          source: tools.source || 'dom',
+          evidenceType: tools.observed ? EvidenceType.OBSERVED : EvidenceType.OBSERVED
+        },
+        tokens: {
+          user: {
+            value: userTokens,
+            source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'tokenizer',
+            evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+          },
+          assistant: {
+            value: assistantTokens,
+            source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'tokenizer',
+            evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+          },
+          total: {
+            value: totalMeasurableTokens,
+            source: Boolean(authoritative?.tokens) ? 'conversation_api' : 'tokenizer',
+            evidenceType: Boolean(authoritative?.tokens) ? EvidenceType.EXACT : EvidenceType.ESTIMATED
+          },
+          contextWindow: {
+            value: contextWindow,
+            source: 'model_db',
+            evidenceType: contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+          }
+        },
+        completeness: {
+          value: completeness.conversationComplete ? 'COMPLETE' : 'PARTIAL',
+          source: completeness.completenessSource,
+          evidenceType: completeness.completenessSource === 'authoritative_api' ? EvidenceType.EXACT : EvidenceType.OBSERVED,
+          domIsPartial: completeness.domIsPartial,
+          virtualizationGap: completeness.virtualizationGap
+        },
+        serverContext: {
+          value: 'UNOBSERVABLE',
+          source: 'unknown',
+          evidenceType: EvidenceType.UNKNOWN
+        },
+        conflicts: input.conflicts || [],
+        hasConflicts: Boolean(input.conflicts && input.conflicts.length > 0)
+      },
+      conflicts: input.conflicts || [],
       limitations: [
         'Visible conversation text is not the complete prompt submitted to the model.',
         'Hidden server-side system prompts, developer instructions, and runtime metadata are not measurable from the client.',
@@ -2585,6 +2996,16 @@ class OverlayUI {
     const percentStr = state?.utilization?.formatted || '0%';
     const accuracy = state?.accuracy?.total || 'ESTIMATED';
     const confidence = state?.confidence?.level || 'MEDIUM';
+    const confidencePercent = state?.confidence?.percentage !== undefined
+      ? state.confidence.percentage
+      : Math.round((state?.confidence?.score || 0.5) * 100);
+    const isLowerBound = Boolean(state?.completeness?.domIsPartial || state?.confidence?.serverContextCompleteness?.isLowerBound);
+    const groundTruthSource = state?.evidence?.turns?.source || state?.evidence?.dataSource?.source || state?.observables?.dataSource || 'dom';
+    const groundTruthLabel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative' || groundTruthSource === 'authoritative_api')
+      ? 'Authoritative API'
+      : (groundTruthSource === 'network' ? 'Network Stream' : 'DOM Extraction');
+    const evidenceLevel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative') ? 'EXACT' : 'OBSERVED';
+    const factors = state?.confidence?.factors || [];
 
     // Progress bar color based on utilization
     let barColor = '#10a37f'; // OpenAI green
@@ -2613,7 +3034,7 @@ class OverlayUI {
           box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
           overflow: hidden;
           transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-          width: ${this.isExpanded ? '300px' : 'auto'};
+          width: ${this.isExpanded ? '320px' : 'auto'};
         }
         .hud-header {
           display: flex;
@@ -2700,6 +3121,27 @@ class OverlayUI {
           color: #9ca3af;
           margin-bottom: 4px;
         }
+        .lower-bound-banner {
+          background: rgba(245, 158, 11, 0.15);
+          border: 1px solid rgba(245, 158, 11, 0.35);
+          border-radius: 6px;
+          padding: 6px 8px;
+          font-size: 11px;
+          color: #fbbf24;
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          line-height: 1.3;
+        }
+        .provenance-box {
+          background: rgba(255, 255, 255, 0.04);
+          padding: 7px 9px;
+          border-radius: 6px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-size: 11px;
+        }
         .breakdown-row {
           display: flex;
           justify-content: space-between;
@@ -2722,6 +3164,10 @@ class OverlayUI {
           background: rgba(255, 255, 255, 0.1);
           color: #9ca3af;
         }
+        .accuracy-pill.exact {
+          color: #10b981;
+          background: rgba(16, 185, 129, 0.15);
+        }
         .accuracy-pill.observed {
           color: #60a5fa;
           background: rgba(96, 165, 250, 0.15);
@@ -2736,8 +3182,13 @@ class OverlayUI {
         }
         .confidence-box {
           background: rgba(255, 255, 255, 0.04);
-          padding: 8px;
+          padding: 8px 10px;
           border-radius: 6px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .confidence-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -2750,6 +3201,25 @@ class OverlayUI {
           font-weight: 700;
           font-size: 11px;
           color: ${confidenceBadgeColor};
+        }
+        .confidence-factors {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+          padding-top: 6px;
+        }
+        .factor-row {
+          font-size: 10px;
+          line-height: 1.35;
+          display: flex;
+          gap: 4px;
+        }
+        .factor-row.positive {
+          color: #34d399;
+        }
+        .factor-row.negative {
+          color: #f87171;
         }
         .limitations-note {
           font-size: 10px;
@@ -2781,26 +3251,38 @@ class OverlayUI {
 
         ${this.isExpanded ? `
           <div class="popover-body">
+            ${isLowerBound ? `
+              <div class="lower-bound-banner">
+                <span>⚠️</span>
+                <span>Context count is a <strong>lower bound</strong> (older turns virtualized in DOM).</span>
+              </div>
+            ` : ''}
+
+            <div class="provenance-box">
+              <span style="color: #9ca3af;">Primary Source:</span>
+              <span style="font-weight: 600;">${groundTruthLabel} <span class="accuracy-pill ${evidenceLevel.toLowerCase()}">${evidenceLevel}</span></span>
+            </div>
+
             <div>
               <div class="section-title">Context Breakdown</div>
               <div class="breakdown-row">
                 <span>User Turns</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.user || '0'} <span class="accuracy-pill estimated">EST</span></span>
+                <span class="breakdown-val">${state?.tokens?.formatted?.user || '0'} <span class="accuracy-pill ${state?.evidence?.tokens?.user?.evidenceType?.toLowerCase() || 'estimated'}">${state?.evidence?.tokens?.user?.evidenceType || 'EST'}</span></span>
               </div>
               <div class="breakdown-row">
                 <span>Assistant Turns</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.assistant || '0'} <span class="accuracy-pill estimated">EST</span></span>
+                <span class="breakdown-val">${state?.tokens?.formatted?.assistant || '0'} <span class="accuracy-pill ${state?.evidence?.tokens?.assistant?.evidenceType?.toLowerCase() || 'estimated'}">${state?.evidence?.tokens?.assistant?.evidenceType || 'EST'}</span></span>
               </div>
               <div class="breakdown-row">
                 <span>Attachments</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.attachments || '0'} <span class="accuracy-pill ${state?.accuracy?.attachments === 'ESTIMATED' ? 'estimated' : 'unknown'}">${state?.accuracy?.attachments === 'ESTIMATED' ? 'EST' : 'UNK'}</span></span>
+                <span class="breakdown-val">${state?.tokens?.formatted?.attachments || '0'} <span class="accuracy-pill ${state?.accuracy?.attachments === 'ESTIMATED' ? 'estimated' : (state?.accuracy?.attachments === 'EXACT' ? 'exact' : 'unknown')}">${state?.accuracy?.attachments || 'UNK'}</span></span>
               </div>
               <div class="breakdown-row">
-                <span>Memory</span>
+                <span>Memory Retrieval</span>
                 <span class="breakdown-val">Server-side <span class="accuracy-pill unknown">UNK</span></span>
               </div>
               <div class="breakdown-row">
-                <span>Tools / MCP / Apps</span>
+                <span>Tools / MCP / Search</span>
                 <span class="breakdown-val">${state?.observables?.toolsObserved ? 'Observed' : 'None'} <span class="accuracy-pill ${state?.observables?.toolsObserved ? 'unknown' : 'observed'}">${state?.observables?.toolsObserved ? 'UNK' : 'OBS'}</span></span>
               </div>
               <div class="breakdown-row">
@@ -2810,12 +3292,24 @@ class OverlayUI {
             </div>
 
             <div class="confidence-box">
-              <span class="confidence-label">Confidence Score:</span>
-              <span class="confidence-value">${confidence} (${Math.round((state?.confidence?.score || 0.5) * 100)}%)</span>
+              <div class="confidence-header">
+                <span class="confidence-label">Measurement Confidence:</span>
+                <span class="confidence-value">${confidencePercent}% (${confidence})</span>
+              </div>
+              ${factors.length > 0 ? `
+                <div class="confidence-factors">
+                  ${factors.map(f => `
+                    <div class="factor-row ${f.type}">
+                      <span>${f.type === 'positive' ? '+' : '−'}</span>
+                      <span>${f.text}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
             </div>
 
             <div class="limitations-note">
-              Truth-in-Measurement: DOM token sum ≠ complete model prompt. Hidden system prompts and memory vectors remain unmeasurable.
+              <strong>Truth-in-Measurement:</strong> Confidence reflects visible token measurement accuracy (${confidencePercent}%). Unobservable server prompts, internal tool schemas, and memory vector overhead remain classified as UNKNOWN.
             </div>
           </div>
         ` : ''}
@@ -3002,6 +3496,7 @@ class ChatGPTDOMObserver {
 
 
 
+
 class ContentScriptCoordinator {
   constructor(modelLimitsDb) {
     this.tokenizer = new Tokenizer();
@@ -3158,11 +3653,12 @@ class ContentScriptCoordinator {
       let dataSource = 'dom';
       let apiError = null;
       let authMessagesCount = null;
+      let normalized = null;
 
       if (conversationId) {
         const authResult = await this.conversationClient.fetchConversation(conversationId);
         if (authResult.success && authResult.data) {
-          const normalized = this.conversationClient.normalizeConversation(authResult.data);
+          normalized = this.conversationClient.normalizeConversation(authResult.data);
           if (normalized.messages && normalized.messages.length > 0) {
             effectiveMessages = [...normalized.messages];
             authMessagesCount = normalized.messages.length;
@@ -3326,7 +3822,100 @@ class ContentScriptCoordinator {
         completenessSource
       };
 
-      // 9. Calculate context metrics
+      // 9. Multi-Source Candidate Assembly & Evidence Reconciliation (Group E)
+      const networkHealth = this.requestObserver.getHealth();
+
+      const modelCandidates = [];
+      if (normalized?.modelSlug) {
+        modelCandidates.push({
+          value: normalized.modelSlug,
+          source: 'conversation_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
+      if (netModel && netModel.value) {
+        modelCandidates.push({
+          value: netModel.value,
+          source: 'network',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+      const domModel = this.modelDetector.detect(document);
+      if (domModel && domModel.id && domModel.id !== 'unknown') {
+        modelCandidates.push({
+          value: domModel.id,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const turnCandidates = [];
+      if (authMessagesCount !== null) {
+        turnCandidates.push({
+          value: authMessagesCount,
+          source: 'conversation_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
+      if (rawDomMessages && rawDomMessages.length > 0) {
+        turnCandidates.push({
+          value: rawDomMessages.length,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const attachmentCandidates = [];
+      if (normalized?.attachments) {
+        attachmentCandidates.push({
+          value: normalized.attachments.count,
+          source: 'conversation_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
+      const domAttachments = this.attachmentDetector.detect(document);
+      if (domAttachments) {
+        attachmentCandidates.push({
+          value: domAttachments.count,
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const toolCandidates = [];
+      if (netTools.length > 0) {
+        toolCandidates.push({
+          value: netTools.map(t => t.name).join(','),
+          source: 'network',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+      if (domTools.list.length > 0) {
+        toolCandidates.push({
+          value: domTools.list.map(t => t.type).join(','),
+          source: 'dom',
+          evidenceType: EvidenceType.OBSERVED
+        });
+      }
+
+      const reconciled = EvidenceMerger.reconcileState({
+        modelCandidates,
+        turnCandidates,
+        attachmentCandidates,
+        toolCandidates,
+        completeness,
+        networkHealth
+      });
+
+      // Update model with winning reconciled model if available
+      if (reconciled.evidence?.model?.value) {
+        model = this.modelDetector.resolveModel(reconciled.evidence.model.value);
+      }
+      if (!model) {
+        model = domModel || this.modelDetector.resolveModel('unknown');
+      }
+
+      // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
@@ -3337,11 +3926,13 @@ class ContentScriptCoordinator {
           enabled: true
         },
         completeness,
-        isPartial: !conversationComplete
+        isPartial: !conversationComplete,
+        evidence: reconciled.evidence,
+        conflicts: reconciled.conflicts,
+        networkHealth
       });
 
       // Attach authoritative & network observables
-      const networkHealth = this.requestObserver.getHealth();
       contextState.observables.dataSource = dataSource;
       contextState.observables.conversationId = conversationId;
       contextState.observables.domMessagesCount = rawDomMessages.length;
@@ -3352,32 +3943,8 @@ class ContentScriptCoordinator {
         contextState.observables.apiError = apiError;
       }
 
-      // 10. Stamped Epistemic Evidence Model
-      contextState.evidence = {
-        dataSource: {
-          value: dataSource,
-          source: dataSource === 'authoritative' ? 'authoritative_api' : (dataSource === 'dom_fallback' ? 'dom_fallback' : 'dom'),
-          evidenceType: dataSource === 'authoritative' ? 'EXACT' : 'OBSERVED'
-        },
-        model: {
-          value: model.id,
-          source: modelProvenance.source,
-          evidenceType: 'OBSERVED'
-        },
-        completeness: {
-          value: conversationComplete ? 'COMPLETE' : 'PARTIAL',
-          source: completenessSource,
-          evidenceType: 'OBSERVED',
-          domIsPartial,
-          virtualizationGap
-        },
-        networkHealth: {
-          value: networkHealth.networkAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
-          source: 'network',
-          evidenceType: 'OBSERVED',
-          details: networkHealth
-        }
-      };
+      contextState.evidence = reconciled.evidence;
+      contextState.conflicts = reconciled.conflicts;
 
       this.latestState = contextState;
 

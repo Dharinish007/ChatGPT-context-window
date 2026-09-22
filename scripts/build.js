@@ -56,6 +56,9 @@ const tokenizerCode = fs.readFileSync(path.join(rootDir, 'engine', 'tokenizer.js
 const classifierCode = fs.readFileSync(path.join(rootDir, 'engine', 'context-classifier.js'), 'utf8')
   .replace(/export\s+/g, '');
 
+const mergerCode = fs.readFileSync(path.join(rootDir, 'engine', 'evidence-merger.js'), 'utf8')
+  .replace(/export\s+/g, '');
+
 const confidenceCode = fs.readFileSync(path.join(rootDir, 'engine', 'confidence-engine.js'), 'utf8')
   .replace(/export\s+/g, '');
 
@@ -114,6 +117,8 @@ const bundledContentScript = `/**
   ${tokenizerCode}
 
   ${classifierCode}
+
+  ${mergerCode}
 
   ${confidenceCode}
 

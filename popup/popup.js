@@ -11,6 +11,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const confidenceLevelEl = document.getElementById('confidence-level');
   const modelSourceEl = document.getElementById('model-source');
   const accuracyTagEl = document.getElementById('accuracy-tag');
+  const lowerBoundBadgeEl = document.getElementById('lower-bound-badge');
+  const factorsConfidencePillEl = document.getElementById('factors-confidence-pill');
+  const factorsListEl = document.getElementById('factors-list');
 
   const userTokensEl = document.getElementById('user-tokens');
   const userTurnsCountEl = document.getElementById('user-turns-count');
@@ -36,7 +39,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Model name & limit
     const modelName = state.model?.displayName || 'Unknown Model';
     modelNameEl.textContent = modelName;
-    modelSourceEl.textContent = state.model?.source || 'Unverified limits';
+
+    // Ground truth provenance & source
+    const groundTruthSource = state.evidence?.turns?.source || state.evidence?.dataSource?.source || state.observables?.dataSource || 'dom';
+    const groundTruthLabel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative' || groundTruthSource === 'authoritative_api')
+      ? 'Authoritative API'
+      : (groundTruthSource === 'network' ? 'Network Stream' : 'DOM Scraping');
+    const evidenceLevel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative') ? 'EXACT' : (state.accuracy?.total || 'OBSERVED');
+    modelSourceEl.textContent = `${groundTruthLabel} • ${evidenceLevel}`;
 
     const currentTokensStr = state.tokens?.formatted?.total || '0';
     const limitTokensStr = state.tokens?.formatted?.contextWindow || 'Unknown';
@@ -60,7 +70,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Accuracy tag & confidence
     accuracyTagEl.textContent = state.accuracy?.total || 'ESTIMATED';
-    confidenceLevelEl.textContent = state.confidence?.level || 'Medium';
+    if (evidenceLevel === 'EXACT') {
+      accuracyTagEl.classList.add('exact');
+    } else {
+      accuracyTagEl.classList.remove('exact');
+    }
+
+    const confScore = state.confidence?.percentage !== undefined
+      ? state.confidence.percentage
+      : Math.round((state.confidence?.score || 0.5) * 100);
+    confidenceLevelEl.textContent = `${state.confidence?.level || 'Medium'} (${confScore}%)`;
+
+    if (factorsConfidencePillEl) {
+      factorsConfidencePillEl.textContent = `${confScore}%`;
+    }
+
+    // Lower bound indicator
+    const isLowerBound = Boolean(state.completeness?.domIsPartial || state.confidence?.serverContextCompleteness?.isLowerBound);
+    if (lowerBoundBadgeEl) {
+      if (isLowerBound) {
+        lowerBoundBadgeEl.classList.remove('hidden');
+      } else {
+        lowerBoundBadgeEl.classList.add('hidden');
+      }
+    }
+
+    // Explainable factors list
+    if (factorsListEl && Array.isArray(state.confidence?.factors) && state.confidence.factors.length > 0) {
+      factorsListEl.innerHTML = state.confidence.factors.map(f => `
+        <div class="factor-row ${f.type}">
+          <span class="factor-sign">${f.type === 'positive' ? '+' : '−'}</span>
+          <span class="factor-desc">${f.text}</span>
+        </div>
+      `).join('');
+    }
 
     // Source table breakdown
     userTokensEl.textContent = state.tokens?.formatted?.user || '0';
@@ -73,7 +116,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     attachmentTokensEl.textContent = state.tokens?.formatted?.attachments || '0';
 
     if (state.observables?.toolsObserved && state.observables.toolsList?.length > 0) {
-      toolsStatusEl.textContent = state.observables.toolsList.map(t => t.label).join(', ');
+      toolsStatusEl.textContent = state.observables.toolsList.map(t => t.label || t.type).join(', ');
     } else {
       toolsStatusEl.textContent = 'None observed';
     }

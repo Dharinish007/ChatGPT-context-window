@@ -98,6 +98,16 @@ export class OverlayUI {
     const percentStr = state?.utilization?.formatted || '0%';
     const accuracy = state?.accuracy?.total || 'ESTIMATED';
     const confidence = state?.confidence?.level || 'MEDIUM';
+    const confidencePercent = state?.confidence?.percentage !== undefined
+      ? state.confidence.percentage
+      : Math.round((state?.confidence?.score || 0.5) * 100);
+    const isLowerBound = Boolean(state?.completeness?.domIsPartial || state?.confidence?.serverContextCompleteness?.isLowerBound);
+    const groundTruthSource = state?.evidence?.turns?.source || state?.evidence?.dataSource?.source || state?.observables?.dataSource || 'dom';
+    const groundTruthLabel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative' || groundTruthSource === 'authoritative_api')
+      ? 'Authoritative API'
+      : (groundTruthSource === 'network' ? 'Network Stream' : 'DOM Extraction');
+    const evidenceLevel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative') ? 'EXACT' : 'OBSERVED';
+    const factors = state?.confidence?.factors || [];
 
     // Progress bar color based on utilization
     let barColor = '#10a37f'; // OpenAI green
@@ -126,7 +136,7 @@ export class OverlayUI {
           box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
           overflow: hidden;
           transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-          width: ${this.isExpanded ? '300px' : 'auto'};
+          width: ${this.isExpanded ? '320px' : 'auto'};
         }
         .hud-header {
           display: flex;
@@ -213,6 +223,27 @@ export class OverlayUI {
           color: #9ca3af;
           margin-bottom: 4px;
         }
+        .lower-bound-banner {
+          background: rgba(245, 158, 11, 0.15);
+          border: 1px solid rgba(245, 158, 11, 0.35);
+          border-radius: 6px;
+          padding: 6px 8px;
+          font-size: 11px;
+          color: #fbbf24;
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          line-height: 1.3;
+        }
+        .provenance-box {
+          background: rgba(255, 255, 255, 0.04);
+          padding: 7px 9px;
+          border-radius: 6px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-size: 11px;
+        }
         .breakdown-row {
           display: flex;
           justify-content: space-between;
@@ -235,6 +266,10 @@ export class OverlayUI {
           background: rgba(255, 255, 255, 0.1);
           color: #9ca3af;
         }
+        .accuracy-pill.exact {
+          color: #10b981;
+          background: rgba(16, 185, 129, 0.15);
+        }
         .accuracy-pill.observed {
           color: #60a5fa;
           background: rgba(96, 165, 250, 0.15);
@@ -249,8 +284,13 @@ export class OverlayUI {
         }
         .confidence-box {
           background: rgba(255, 255, 255, 0.04);
-          padding: 8px;
+          padding: 8px 10px;
           border-radius: 6px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .confidence-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -263,6 +303,25 @@ export class OverlayUI {
           font-weight: 700;
           font-size: 11px;
           color: ${confidenceBadgeColor};
+        }
+        .confidence-factors {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+          padding-top: 6px;
+        }
+        .factor-row {
+          font-size: 10px;
+          line-height: 1.35;
+          display: flex;
+          gap: 4px;
+        }
+        .factor-row.positive {
+          color: #34d399;
+        }
+        .factor-row.negative {
+          color: #f87171;
         }
         .limitations-note {
           font-size: 10px;
@@ -294,26 +353,38 @@ export class OverlayUI {
 
         ${this.isExpanded ? `
           <div class="popover-body">
+            ${isLowerBound ? `
+              <div class="lower-bound-banner">
+                <span>⚠️</span>
+                <span>Context count is a <strong>lower bound</strong> (older turns virtualized in DOM).</span>
+              </div>
+            ` : ''}
+
+            <div class="provenance-box">
+              <span style="color: #9ca3af;">Primary Source:</span>
+              <span style="font-weight: 600;">${groundTruthLabel} <span class="accuracy-pill ${evidenceLevel.toLowerCase()}">${evidenceLevel}</span></span>
+            </div>
+
             <div>
               <div class="section-title">Context Breakdown</div>
               <div class="breakdown-row">
                 <span>User Turns</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.user || '0'} <span class="accuracy-pill estimated">EST</span></span>
+                <span class="breakdown-val">${state?.tokens?.formatted?.user || '0'} <span class="accuracy-pill ${state?.evidence?.tokens?.user?.evidenceType?.toLowerCase() || 'estimated'}">${state?.evidence?.tokens?.user?.evidenceType || 'EST'}</span></span>
               </div>
               <div class="breakdown-row">
                 <span>Assistant Turns</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.assistant || '0'} <span class="accuracy-pill estimated">EST</span></span>
+                <span class="breakdown-val">${state?.tokens?.formatted?.assistant || '0'} <span class="accuracy-pill ${state?.evidence?.tokens?.assistant?.evidenceType?.toLowerCase() || 'estimated'}">${state?.evidence?.tokens?.assistant?.evidenceType || 'EST'}</span></span>
               </div>
               <div class="breakdown-row">
                 <span>Attachments</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.attachments || '0'} <span class="accuracy-pill ${state?.accuracy?.attachments === 'ESTIMATED' ? 'estimated' : 'unknown'}">${state?.accuracy?.attachments === 'ESTIMATED' ? 'EST' : 'UNK'}</span></span>
+                <span class="breakdown-val">${state?.tokens?.formatted?.attachments || '0'} <span class="accuracy-pill ${state?.accuracy?.attachments === 'ESTIMATED' ? 'estimated' : (state?.accuracy?.attachments === 'EXACT' ? 'exact' : 'unknown')}">${state?.accuracy?.attachments || 'UNK'}</span></span>
               </div>
               <div class="breakdown-row">
-                <span>Memory</span>
+                <span>Memory Retrieval</span>
                 <span class="breakdown-val">Server-side <span class="accuracy-pill unknown">UNK</span></span>
               </div>
               <div class="breakdown-row">
-                <span>Tools / MCP / Apps</span>
+                <span>Tools / MCP / Search</span>
                 <span class="breakdown-val">${state?.observables?.toolsObserved ? 'Observed' : 'None'} <span class="accuracy-pill ${state?.observables?.toolsObserved ? 'unknown' : 'observed'}">${state?.observables?.toolsObserved ? 'UNK' : 'OBS'}</span></span>
               </div>
               <div class="breakdown-row">
@@ -323,12 +394,24 @@ export class OverlayUI {
             </div>
 
             <div class="confidence-box">
-              <span class="confidence-label">Confidence Score:</span>
-              <span class="confidence-value">${confidence} (${Math.round((state?.confidence?.score || 0.5) * 100)}%)</span>
+              <div class="confidence-header">
+                <span class="confidence-label">Measurement Confidence:</span>
+                <span class="confidence-value">${confidencePercent}% (${confidence})</span>
+              </div>
+              ${factors.length > 0 ? `
+                <div class="confidence-factors">
+                  ${factors.map(f => `
+                    <div class="factor-row ${f.type}">
+                      <span>${f.type === 'positive' ? '+' : '−'}</span>
+                      <span>${f.text}</span>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
             </div>
 
             <div class="limitations-note">
-              Truth-in-Measurement: DOM token sum ≠ complete model prompt. Hidden system prompts and memory vectors remain unmeasurable.
+              <strong>Truth-in-Measurement:</strong> Confidence reflects visible token measurement accuracy (${confidencePercent}%). Unobservable server prompts, internal tool schemas, and memory vector overhead remain classified as UNKNOWN.
             </div>
           </div>
         ` : ''}

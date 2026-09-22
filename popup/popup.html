@@ -34,7 +34,10 @@
       <!-- Utilization Card -->
       <section class="gauge-card">
         <div class="gauge-header">
-          <span class="gauge-label">Context Utilization</span>
+          <div class="header-tags">
+            <span class="gauge-label">Context Utilization</span>
+            <span class="lower-bound-badge hidden" id="lower-bound-badge">⚠️ Lower Bound</span>
+          </div>
           <span class="accuracy-tag" id="accuracy-tag">ESTIMATED</span>
         </div>
         
@@ -132,11 +135,25 @@
         </div>
       </section>
 
+      <!-- Evidence & Confidence Explainability Card -->
+      <section class="confidence-factors-card" id="confidence-factors-card">
+        <div class="factors-card-header">
+          <h2 class="card-title">Evidence & Confidence</h2>
+          <span class="confidence-pill" id="factors-confidence-pill">96%</span>
+        </div>
+        <div class="factors-list" id="factors-list">
+          <div class="factor-row positive">
+            <span class="factor-sign">+</span>
+            <span class="factor-desc">Evaluating evidence...</span>
+          </div>
+        </div>
+      </section>
+
       <!-- Limitations & Epistemic Statement -->
       <section class="notice-card">
         <div class="notice-icon">ℹ️</div>
         <div class="notice-text">
-          <p><strong>Truth-in-Measurement:</strong> Visible conversation tokens do not equal total model context. Server-side system prompts and memory tokens remain strictly unobservable.</p>
+          <p><strong>Truth-in-Measurement:</strong> Confidence reflects client-side measurement accuracy of observable tokens. Unobservable system instructions, runtime schemas, and memory vector overhead remain classified as UNKNOWN.</p>
         </div>
       </section>
 

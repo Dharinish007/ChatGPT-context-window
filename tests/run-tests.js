@@ -8,6 +8,7 @@ import { runConversationClientTests } from './unit/conversation-client.test.js';
 import { runNetworkObserverTests } from './unit/network-observer.test.js';
 import { runCompletenessTests } from './unit/completeness.test.js';
 import { runDomExtractorTests } from './dom/extractor.test.js';
+import { runEvidenceConfidenceTests } from './unit/evidence-confidence.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -52,6 +53,12 @@ console.log('');
 const r6 = runDomExtractorTests();
 totalPassed += r6.passed;
 totalFailed += r6.failed;
+console.log('');
+
+// 7. Evidence & Confidence tests (Group E)
+const r7 = runEvidenceConfidenceTests();
+totalPassed += r7.passed;
+totalFailed += r7.failed;
 console.log('');
 
 const t1 = performance.now();
