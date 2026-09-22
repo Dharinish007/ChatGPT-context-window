@@ -9,12 +9,9 @@
  * Authoritative API (conversation_api) > Network (network) > DOM (dom) > Local Inference (tokenizer/model_db/heuristic)
  */
 
-export const EvidenceType = Object.freeze({
-  EXACT: 'EXACT',
-  OBSERVED: 'OBSERVED',
-  ESTIMATED: 'ESTIMATED',
-  UNKNOWN: 'UNKNOWN'
-});
+import { EvidenceType } from './context-classifier.js';
+
+export { EvidenceType };
 
 export const SourcePriority = Object.freeze({
   conversation_api: 4,

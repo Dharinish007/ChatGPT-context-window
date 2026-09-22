@@ -48,55 +48,31 @@ const tiktokenInlined = `
   const o200k_base = ${o200kRaw.trim()};
 `;
 
+// Helper to read and clean module syntax for inlining into content script IIFE
+function readCleanModule(filePath) {
+  return fs.readFileSync(filePath, 'utf8')
+    .replace(/import\s+[^;]+from\s+[^;]+;/g, '')
+    .replace(/export\s*\{[^}]+\};?/g, '')
+    .replace(/export\s+default\s+/g, '')
+    .replace(/export\s+/g, '');
+}
+
 // Read modules
-const tokenizerCode = fs.readFileSync(path.join(rootDir, 'engine', 'tokenizer.js'), 'utf8')
-  .replace(/import\s+.*?from\s+.*?;/g, '')
-  .replace(/export\s+/g, '');
-
-const classifierCode = fs.readFileSync(path.join(rootDir, 'engine', 'context-classifier.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const mergerCode = fs.readFileSync(path.join(rootDir, 'engine', 'evidence-merger.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const confidenceCode = fs.readFileSync(path.join(rootDir, 'engine', 'confidence-engine.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const calculatorCode = fs.readFileSync(path.join(rootDir, 'engine', 'context-calculator.js'), 'utf8')
-  .replace(/import\s+.*?from\s+.*?;/g, '')
-  .replace(/export\s+/g, '');
-
-const extractorCode = fs.readFileSync(path.join(rootDir, 'content', 'message-extractor.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const planDetectorCode = fs.readFileSync(path.join(rootDir, 'content', 'plan-detector.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const detectorCode = fs.readFileSync(path.join(rootDir, 'content', 'model-detector.js'), 'utf8')
-  .replace(/import\s+.*?from\s+.*?;/g, '')
-  .replace(/export\s+/g, '');
-
-const conversationClientCode = fs.readFileSync(path.join(rootDir, 'content', 'conversation-client.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const attachmentCode = fs.readFileSync(path.join(rootDir, 'content', 'attachment-detector.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const toolCode = fs.readFileSync(path.join(rootDir, 'content', 'tool-detector.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const overlayCode = fs.readFileSync(path.join(rootDir, 'content', 'overlay-ui.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const domObserverCode = fs.readFileSync(path.join(rootDir, 'content', 'chatgpt-dom.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const requestObserverCode = fs.readFileSync(path.join(rootDir, 'network', 'request-observer.js'), 'utf8')
-  .replace(/export\s+/g, '');
-
-const contentMainCode = fs.readFileSync(path.join(rootDir, 'content', 'content-main.js'), 'utf8')
-  .replace(/import\s+.*?from\s+.*?;/g, '')
-  .replace(/export\s+/g, '');
+const tokenizerCode = readCleanModule(path.join(rootDir, 'engine', 'tokenizer.js'));
+const classifierCode = readCleanModule(path.join(rootDir, 'engine', 'context-classifier.js'));
+const mergerCode = readCleanModule(path.join(rootDir, 'engine', 'evidence-merger.js'));
+const confidenceCode = readCleanModule(path.join(rootDir, 'engine', 'confidence-engine.js'));
+const calculatorCode = readCleanModule(path.join(rootDir, 'engine', 'context-calculator.js'));
+const extractorCode = readCleanModule(path.join(rootDir, 'content', 'message-extractor.js'));
+const planDetectorCode = readCleanModule(path.join(rootDir, 'content', 'plan-detector.js'));
+const detectorCode = readCleanModule(path.join(rootDir, 'content', 'model-detector.js'));
+const conversationClientCode = readCleanModule(path.join(rootDir, 'content', 'conversation-client.js'));
+const attachmentCode = readCleanModule(path.join(rootDir, 'content', 'attachment-detector.js'));
+const toolCode = readCleanModule(path.join(rootDir, 'content', 'tool-detector.js'));
+const overlayCode = readCleanModule(path.join(rootDir, 'content', 'overlay-ui.js'));
+const domObserverCode = readCleanModule(path.join(rootDir, 'content', 'chatgpt-dom.js'));
+const requestObserverCode = readCleanModule(path.join(rootDir, 'network', 'request-observer.js'));
+const contentMainCode = readCleanModule(path.join(rootDir, 'content', 'content-main.js'));
 
 const bundledContentScript = `/**
  * ChatGPT Context Monitor - Production Content Script
@@ -163,6 +139,14 @@ const bundledContentScript = `/**
   }
 })();
 `;
+
+// Validate bundled content script syntax before writing
+try {
+  new Function(bundledContentScript);
+} catch (syntaxErr) {
+  console.error('[Build Error] Syntax error in bundled content script:', syntaxErr);
+  process.exit(1);
+}
 
 fs.writeFileSync(path.join(rootDir, 'content', 'content-script.js'), bundledContentScript, 'utf8');
 console.log('[Build] Successfully generated content/content-script.js (' + (bundledContentScript.length / 1024).toFixed(1) + ' KB)');

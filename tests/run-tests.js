@@ -10,6 +10,7 @@ import { runCompletenessTests } from './unit/completeness.test.js';
 import { runDomExtractorTests } from './dom/extractor.test.js';
 import { runEvidenceConfidenceTests } from './unit/evidence-confidence.test.js';
 import { runModelPlanLimitsTests } from './unit/model-plan-limits.test.js';
+import { runBundleIntegrityTests } from './unit/bundle-integrity.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -66,6 +67,12 @@ console.log('');
 const r8 = runModelPlanLimitsTests();
 totalPassed += r8.passed;
 totalFailed += r8.failed;
+console.log('');
+
+// 9. Bundle integrity & syntax tests
+const r9 = runBundleIntegrityTests();
+totalPassed += r9.passed;
+totalFailed += r9.failed;
 console.log('');
 
 const t1 = performance.now();

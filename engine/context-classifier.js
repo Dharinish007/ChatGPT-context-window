@@ -8,14 +8,14 @@
  * - UNKNOWN: Server-side, hidden, unobservable, or unmeasurable data
  */
 
-export const AccuracyClass = Object.freeze({
+export const EvidenceType = Object.freeze({
   EXACT: 'EXACT',
   OBSERVED: 'OBSERVED',
   ESTIMATED: 'ESTIMATED',
   UNKNOWN: 'UNKNOWN'
 });
 
-export const EvidenceType = AccuracyClass;
+export const AccuracyClass = EvidenceType;
 
 export class ContextClassifier {
   /**

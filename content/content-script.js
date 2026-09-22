@@ -1242,14 +1242,14 @@ class Tokenizer {
  * - UNKNOWN: Server-side, hidden, unobservable, or unmeasurable data
  */
 
-const AccuracyClass = Object.freeze({
+const EvidenceType = Object.freeze({
   EXACT: 'EXACT',
   OBSERVED: 'OBSERVED',
   ESTIMATED: 'ESTIMATED',
   UNKNOWN: 'UNKNOWN'
 });
 
-const EvidenceType = AccuracyClass;
+const AccuracyClass = EvidenceType;
 
 class ContextClassifier {
   /**
@@ -1357,12 +1357,9 @@ class ContextClassifier {
  * Authoritative API (conversation_api) > Network (network) > DOM (dom) > Local Inference (tokenizer/model_db/heuristic)
  */
 
-const EvidenceType = Object.freeze({
-  EXACT: 'EXACT',
-  OBSERVED: 'OBSERVED',
-  ESTIMATED: 'ESTIMATED',
-  UNKNOWN: 'UNKNOWN'
-});
+
+
+
 
 const SourcePriority = Object.freeze({
   conversation_api: 4,
