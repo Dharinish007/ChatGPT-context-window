@@ -1180,6 +1180,16 @@ class ContextCalculator {
       isPartialConversation: isPartial
     });
 
+    const completenessInput = input.completeness || null;
+    const completeness = completenessInput || {
+      conversationComplete: !isPartial,
+      domIsPartial: isPartial,
+      renderedTurnCount: messages.length,
+      authoritativeTurnCount: Boolean(authoritative?.tokens) ? messages.length : null,
+      virtualizationGap: 0,
+      completenessSource: Boolean(authoritative?.tokens) ? 'authoritative_api' : (isPartial ? 'dom_partial' : 'dom_complete')
+    };
+
     return {
       timestamp: Date.now(),
       model: {
@@ -1210,6 +1220,14 @@ class ContextCalculator {
         percentage: utilizationPercent,
         formatted: utilizationPercent !== null ? `${utilizationPercent}%` : 'Unknown'
       },
+      completeness: {
+        conversationComplete: completeness.conversationComplete,
+        domIsPartial: completeness.domIsPartial,
+        renderedTurnCount: completeness.renderedTurnCount,
+        authoritativeTurnCount: completeness.authoritativeTurnCount,
+        virtualizationGap: completeness.virtualizationGap,
+        completenessSource: completeness.completenessSource
+      },
       observables: {
         messagesCount: messages.length,
         attachmentsCount: attachments.count,
@@ -1217,6 +1235,12 @@ class ContextCalculator {
         toolsList: tools.list || [],
         memoryObserved: memory.observed,
         isPartialConversation: isPartial,
+        conversationComplete: completeness.conversationComplete,
+        domIsPartial: completeness.domIsPartial,
+        renderedTurnCount: completeness.renderedTurnCount,
+        authoritativeTurnCount: completeness.authoritativeTurnCount,
+        virtualizationGap: completeness.virtualizationGap,
+        completenessSource: completeness.completenessSource,
         nonTextPartsCount,
         nonTextPartsList
       },
@@ -3260,7 +3284,49 @@ class ContentScriptCoordinator {
         list: combinedToolList
       };
 
-      // 8. Calculate context metrics
+      // 8. Reconcile Completeness & Virtualization (Group D)
+      const renderedTurnCount = rawDomMessages.length;
+      let authoritativeTurnCount = null;
+      let conversationComplete = true;
+      let domIsPartial = false;
+      let virtualizationGap = 0;
+      let completenessSource = 'dom_complete';
+
+      if (dataSource === 'authoritative' && authMessagesCount !== null) {
+        authoritativeTurnCount = authMessagesCount;
+        completenessSource = 'authoritative_api';
+        if (authoritativeTurnCount > renderedTurnCount) {
+          domIsPartial = true;
+          virtualizationGap = authoritativeTurnCount - renderedTurnCount;
+        }
+        // When authoritative data is present, the context state has all turns in the active branch
+        conversationComplete = true;
+      } else if (conversationId) {
+        // An existing conversation was loaded, but authoritative API failed / offline
+        authoritativeTurnCount = null;
+        domIsPartial = true;
+        conversationComplete = false;
+        virtualizationGap = 0;
+        completenessSource = 'dom_partial';
+      } else {
+        // Brand new chat with no conversation ID in URL
+        authoritativeTurnCount = null;
+        domIsPartial = false;
+        conversationComplete = true;
+        virtualizationGap = 0;
+        completenessSource = 'dom_complete';
+      }
+
+      const completeness = {
+        conversationComplete,
+        domIsPartial,
+        renderedTurnCount,
+        authoritativeTurnCount,
+        virtualizationGap,
+        completenessSource
+      };
+
+      // 9. Calculate context metrics
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
@@ -3270,7 +3336,8 @@ class ContentScriptCoordinator {
           observed: tools.list.some(t => t.type === 'memory'),
           enabled: true
         },
-        isPartial: false
+        completeness,
+        isPartial: !conversationComplete
       });
 
       // Attach authoritative & network observables
@@ -3285,7 +3352,7 @@ class ContentScriptCoordinator {
         contextState.observables.apiError = apiError;
       }
 
-      // 9. Stamped Epistemic Evidence Model (Task 13)
+      // 10. Stamped Epistemic Evidence Model
       contextState.evidence = {
         dataSource: {
           value: dataSource,
@@ -3296,6 +3363,13 @@ class ContentScriptCoordinator {
           value: model.id,
           source: modelProvenance.source,
           evidenceType: 'OBSERVED'
+        },
+        completeness: {
+          value: conversationComplete ? 'COMPLETE' : 'PARTIAL',
+          source: completenessSource,
+          evidenceType: 'OBSERVED',
+          domIsPartial,
+          virtualizationGap
         },
         networkHealth: {
           value: networkHealth.networkAvailable ? 'AVAILABLE' : 'UNAVAILABLE',

@@ -121,6 +121,16 @@ export class ContextCalculator {
       isPartialConversation: isPartial
     });
 
+    const completenessInput = input.completeness || null;
+    const completeness = completenessInput || {
+      conversationComplete: !isPartial,
+      domIsPartial: isPartial,
+      renderedTurnCount: messages.length,
+      authoritativeTurnCount: Boolean(authoritative?.tokens) ? messages.length : null,
+      virtualizationGap: 0,
+      completenessSource: Boolean(authoritative?.tokens) ? 'authoritative_api' : (isPartial ? 'dom_partial' : 'dom_complete')
+    };
+
     return {
       timestamp: Date.now(),
       model: {
@@ -151,6 +161,14 @@ export class ContextCalculator {
         percentage: utilizationPercent,
         formatted: utilizationPercent !== null ? `${utilizationPercent}%` : 'Unknown'
       },
+      completeness: {
+        conversationComplete: completeness.conversationComplete,
+        domIsPartial: completeness.domIsPartial,
+        renderedTurnCount: completeness.renderedTurnCount,
+        authoritativeTurnCount: completeness.authoritativeTurnCount,
+        virtualizationGap: completeness.virtualizationGap,
+        completenessSource: completeness.completenessSource
+      },
       observables: {
         messagesCount: messages.length,
         attachmentsCount: attachments.count,
@@ -158,6 +176,12 @@ export class ContextCalculator {
         toolsList: tools.list || [],
         memoryObserved: memory.observed,
         isPartialConversation: isPartial,
+        conversationComplete: completeness.conversationComplete,
+        domIsPartial: completeness.domIsPartial,
+        renderedTurnCount: completeness.renderedTurnCount,
+        authoritativeTurnCount: completeness.authoritativeTurnCount,
+        virtualizationGap: completeness.virtualizationGap,
+        completenessSource: completeness.completenessSource,
         nonTextPartsCount,
         nonTextPartsList
       },
