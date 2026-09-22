@@ -1,0 +1,63 @@
+{
+  "title": "Document Analysis with Images",
+  "create_time": 1726900300.0,
+  "update_time": 1726900400.0,
+  "conversation_id": "d9e8f7a6-9876-5432-10fe-abcdef012345",
+  "current_node": "node-assistant-1",
+  "mapping": {
+    "node-root": {
+      "id": "node-root",
+      "message": null,
+      "parent": null,
+      "children": ["node-user-1"]
+    },
+    "node-user-1": {
+      "id": "node-user-1",
+      "message": {
+        "id": "msg-usr-1",
+        "author": { "role": "user" },
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "Please review this attached financial quarterly statement and chart.",
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "sed-file-pointer-001",
+              "size_bytes": 1048576,
+              "width": 1200,
+              "height": 800
+            }
+          ]
+        },
+        "metadata": {
+          "attachments": [
+            {
+              "id": "file-doc-001",
+              "name": "Q3_Financial_Summary.pdf",
+              "size": 524288,
+              "mime_type": "application/pdf"
+            }
+          ]
+        }
+      },
+      "parent": "node-root",
+      "children": ["node-assistant-1"]
+    },
+    "node-assistant-1": {
+      "id": "node-assistant-1",
+      "message": {
+        "id": "msg-ast-1",
+        "author": { "role": "assistant" },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "I have analyzed both the Q3 Financial Summary PDF and the chart. Revenue grew 18% quarter-over-quarter."
+          ]
+        },
+        "metadata": { "model_slug": "gpt-4o" }
+      },
+      "parent": "node-user-1",
+      "children": []
+    }
+  }
+}

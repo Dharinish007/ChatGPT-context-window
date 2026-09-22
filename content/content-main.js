@@ -12,6 +12,7 @@ import { ModelDetector } from './model-detector.js';
 import { AttachmentDetector } from './attachment-detector.js';
 import { ToolDetector } from './tool-detector.js';
 import { OverlayUI } from './overlay-ui.js';
+import { ConversationClient } from './conversation-client.js';
 import { ChatGPTDOMObserver } from './chatgpt-dom.js';
 
 export class ContentScriptCoordinator {
@@ -19,11 +20,13 @@ export class ContentScriptCoordinator {
     this.tokenizer = new Tokenizer();
     this.messageExtractor = new MessageExtractor();
     this.modelDetector = new ModelDetector(modelLimitsDb);
+    this.conversationClient = new ConversationClient();
     this.attachmentDetector = new AttachmentDetector();
     this.toolDetector = new ToolDetector();
     this.overlayUI = new OverlayUI();
     this.domObserver = null;
     this.latestState = null;
+    this.activeConversationId = null;
   }
 
   /**
@@ -64,24 +67,77 @@ export class ContentScriptCoordinator {
 
   /**
    * Main analysis pass executed on DOM mutations.
+   * Prioritizes authoritative conversation structure from backend API with DOM fallback.
    * @param {Object} event 
    */
-  handleDOMChange(event = {}) {
+  async handleDOMChange(event = {}) {
     try {
-      // 1. If user navigated to new conversation, clear message tokenizer cache
-      if (event.isNavigation) {
+      // 1. Identify active conversation ID and handle navigation
+      const conversationId = this.conversationClient.extractConversationId();
+      const isNewConversation = conversationId !== this.activeConversationId;
+
+      if (event.isNavigation || isNewConversation) {
         this.tokenizer.clearCache();
+        if (isNewConversation) {
+          this.activeConversationId = conversationId;
+        }
       }
 
-      // 2. Detect model specifications first for model-aware encoding
-      const model = this.modelDetector.detect(document);
+      // 2. Extract DOM messages (used as fallback and for real-time streaming updates)
+      const rawDomMessages = this.messageExtractor.extractMessages(document);
+
+      // 3. Detect model specifications from DOM as fallback
+      let model = this.modelDetector.detect(document);
+
+      // 4. Primary: Retrieve authoritative conversation structure from backend API
+      let effectiveMessages = rawDomMessages;
+      let effectiveAttachments = this.attachmentDetector.detect(document);
+      let dataSource = 'dom';
+      let apiError = null;
+      let authMessagesCount = null;
+
+      if (conversationId) {
+        const authResult = await this.conversationClient.fetchConversation(conversationId);
+        if (authResult.success && authResult.data) {
+          const normalized = this.conversationClient.normalizeConversation(authResult.data);
+          if (normalized.messages && normalized.messages.length > 0) {
+            effectiveMessages = [...normalized.messages];
+            authMessagesCount = normalized.messages.length;
+            dataSource = 'authoritative';
+
+            // Authoritative attachments take precedence over DOM heuristics
+            if (normalized.attachments && normalized.attachments.count > 0) {
+              effectiveAttachments = normalized.attachments;
+            }
+
+            // Prioritize authoritative model slug if detected
+            if (normalized.modelSlug) {
+              model = this.modelDetector.resolveModel(normalized.modelSlug);
+            }
+
+            // Real-time streaming merge:
+            // If the user has an active streaming turn in the DOM, append/update it
+            // so HUD shows live progress while model is generating.
+            const streamingDomTurn = rawDomMessages.find(m => m.isStreaming);
+            if (streamingDomTurn) {
+              const lastEff = effectiveMessages[effectiveMessages.length - 1];
+              if (lastEff && lastEff.role === streamingDomTurn.role && lastEff.id === streamingDomTurn.id) {
+                effectiveMessages[effectiveMessages.length - 1] = streamingDomTurn;
+              } else {
+                effectiveMessages.push(streamingDomTurn);
+              }
+            }
+          }
+        } else {
+          dataSource = 'dom_fallback';
+          apiError = authResult.error || 'Failed to fetch conversation';
+        }
+      }
+
       const encoding = model?.encoding || 'o200k_base';
 
-      // 3. Extract conversation messages
-      const rawMessages = this.messageExtractor.extractMessages(document);
-
-      // 4. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
-      const tokenizedMessages = rawMessages.map(msg => {
+      // 5. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
+      const tokenizedMessages = effectiveMessages.map(msg => {
         const parts = msg.parts || [{ type: 'text', text: msg.text }];
         const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, encoding);
         return {
@@ -90,12 +146,9 @@ export class ContentScriptCoordinator {
           tokens: partsResult.tokens,
           hasNonTextParts: partsResult.hasNonTextParts,
           nonTextParts: partsResult.nonTextParts,
-          isStreaming: msg.isStreaming
+          isStreaming: Boolean(msg.isStreaming)
         };
       });
-
-      // 5. Detect attachments
-      const attachments = this.attachmentDetector.detect(document);
 
       // 6. Detect tools, search, memory, and MCP
       const tools = this.toolDetector.detect(document);
@@ -104,7 +157,7 @@ export class ContentScriptCoordinator {
       const contextState = ContextCalculator.calculate({
         messages: tokenizedMessages,
         model,
-        attachments,
+        attachments: effectiveAttachments,
         tools,
         memory: {
           observed: tools.list.some(t => t.type === 'memory'),
@@ -112,6 +165,15 @@ export class ContentScriptCoordinator {
         },
         isPartial: false
       });
+
+      // Attach authoritative observables
+      contextState.observables.dataSource = dataSource;
+      contextState.observables.conversationId = conversationId;
+      contextState.observables.domMessagesCount = rawDomMessages.length;
+      contextState.observables.authoritativeMessagesCount = authMessagesCount;
+      if (apiError) {
+        contextState.observables.apiError = apiError;
+      }
 
       this.latestState = contextState;
 

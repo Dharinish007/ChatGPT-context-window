@@ -69,6 +69,9 @@ const extractorCode = fs.readFileSync(path.join(rootDir, 'content', 'message-ext
 const detectorCode = fs.readFileSync(path.join(rootDir, 'content', 'model-detector.js'), 'utf8')
   .replace(/export\s+/g, '');
 
+const conversationClientCode = fs.readFileSync(path.join(rootDir, 'content', 'conversation-client.js'), 'utf8')
+  .replace(/export\s+/g, '');
+
 const attachmentCode = fs.readFileSync(path.join(rootDir, 'content', 'attachment-detector.js'), 'utf8')
   .replace(/export\s+/g, '');
 
@@ -114,6 +117,8 @@ const bundledContentScript = `/**
   ${calculatorCode}
 
   // --- Content & DOM Adapters ---
+  ${conversationClientCode}
+
   ${extractorCode}
 
   ${detectorCode}

@@ -1,0 +1,87 @@
+{
+  "title": "Extended Engineering Architecture Discussion",
+  "create_time": 1726900500.0,
+  "update_time": 1726901000.0,
+  "conversation_id": "f1e2d3c4-9999-8888-7777-666655554444",
+  "current_node": "node-ast-6",
+  "mapping": {
+    "node-root": {
+      "id": "node-root",
+      "message": null,
+      "parent": null,
+      "children": ["node-usr-1"]
+    },
+    "node-usr-1": {
+      "id": "node-usr-1",
+      "message": { "id": "m-u1", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Turn 1: What is event sourcing?"] } },
+      "parent": "node-root",
+      "children": ["node-ast-1"]
+    },
+    "node-ast-1": {
+      "id": "node-ast-1",
+      "message": { "id": "m-a1", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Turn 1 Reply: Event sourcing captures all state changes as a sequence of immutable events."] }, "metadata": { "model_slug": "o1" } },
+      "parent": "node-usr-1",
+      "children": ["node-usr-2"]
+    },
+    "node-usr-2": {
+      "id": "node-usr-2",
+      "message": { "id": "m-u2", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Turn 2: How does CQRS relate to it?"] } },
+      "parent": "node-ast-1",
+      "children": ["node-ast-2"]
+    },
+    "node-ast-2": {
+      "id": "node-ast-2",
+      "message": { "id": "m-a2", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Turn 2 Reply: CQRS separates read and write models, often consuming the event store to project read views."] }, "metadata": { "model_slug": "o1" } },
+      "parent": "node-usr-2",
+      "children": ["node-usr-3"]
+    },
+    "node-usr-3": {
+      "id": "node-usr-3",
+      "message": { "id": "m-u3", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Turn 3: What about eventual consistency?"] } },
+      "parent": "node-ast-2",
+      "children": ["node-ast-3"]
+    },
+    "node-ast-3": {
+      "id": "node-ast-3",
+      "message": { "id": "m-a3", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Turn 3 Reply: Projections asynchronously update, so read queries are eventually consistent."] }, "metadata": { "model_slug": "o1" } },
+      "parent": "node-usr-3",
+      "children": ["node-usr-4"]
+    },
+    "node-usr-4": {
+      "id": "node-usr-4",
+      "message": { "id": "m-u4", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Turn 4: How to handle schema evolution?"] } },
+      "parent": "node-ast-3",
+      "children": ["node-ast-4"]
+    },
+    "node-ast-4": {
+      "id": "node-ast-4",
+      "message": { "id": "m-a4", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Turn 4 Reply: Use upcasters, dual-writing, or tolerant readers to migrate event schemas over time."] }, "metadata": { "model_slug": "o1" } },
+      "parent": "node-usr-4",
+      "children": ["node-usr-5"]
+    },
+    "node-usr-5": {
+      "id": "node-usr-5",
+      "message": { "id": "m-u5", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Turn 5: What is snapshotting?"] } },
+      "parent": "node-ast-4",
+      "children": ["node-ast-5"]
+    },
+    "node-ast-5": {
+      "id": "node-ast-5",
+      "message": { "id": "m-a5", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Turn 5 Reply: Periodic snapshots store the aggregate state at event N so replay starts from N rather than 0."] }, "metadata": { "model_slug": "o1" } },
+      "parent": "node-usr-5",
+      "children": ["node-usr-6"]
+    },
+    "node-usr-6": {
+      "id": "node-usr-6",
+      "message": { "id": "m-u6", "author": { "role": "user" }, "content": { "content_type": "text", "parts": ["Turn 6: Summary and recommendations?"] } },
+      "parent": "node-ast-5",
+      "children": ["node-ast-6"]
+    },
+    "node-ast-6": {
+      "id": "node-ast-6",
+      "message": { "id": "m-a6", "author": { "role": "assistant" }, "content": { "content_type": "text", "parts": ["Turn 6 Reply: Event sourcing is ideal for audit trails and temporal models, but adds operational overhead."] }, "metadata": { "model_slug": "o1" } },
+      "parent": "node-usr-6",
+      "children": []
+    }
+  }
+}

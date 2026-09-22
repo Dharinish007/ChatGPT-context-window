@@ -1,0 +1,68 @@
+{
+  "title": "Regenerated Code Example",
+  "create_time": 1726900100.0,
+  "update_time": 1726900200.0,
+  "conversation_id": "b1a2c3d4-4321-8765-dcba-123456789abc",
+  "current_node": "node-assistant-2",
+  "mapping": {
+    "node-root": {
+      "id": "node-root",
+      "message": null,
+      "parent": null,
+      "children": ["node-user-1"]
+    },
+    "node-user-1": {
+      "id": "node-user-1",
+      "message": {
+        "id": "msg-usr-1",
+        "author": { "role": "user" },
+        "content": { "content_type": "text", "parts": ["Write a fibonacci function in Python."] }
+      },
+      "parent": "node-root",
+      "children": ["node-assistant-1-v1", "node-assistant-1-v2"]
+    },
+    "node-assistant-1-v1": {
+      "id": "node-assistant-1-v1",
+      "message": {
+        "id": "msg-ast-1-v1",
+        "author": { "role": "assistant" },
+        "content": { "content_type": "text", "parts": ["Here is recursive fib:\ndef fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)"] },
+        "metadata": { "model_slug": "gpt-4o" }
+      },
+      "parent": "node-user-1",
+      "children": []
+    },
+    "node-assistant-1-v2": {
+      "id": "node-assistant-1-v2",
+      "message": {
+        "id": "msg-ast-1-v2",
+        "author": { "role": "assistant" },
+        "content": { "content_type": "text", "parts": ["Here is an optimized iterative fibonacci:\ndef fib(n):\n    a, b = 0, 1\n    for _ in range(n): a, b = b, a + b\n    return a"] },
+        "metadata": { "model_slug": "gpt-4o" }
+      },
+      "parent": "node-user-1",
+      "children": ["node-user-2"]
+    },
+    "node-user-2": {
+      "id": "node-user-2",
+      "message": {
+        "id": "msg-usr-2",
+        "author": { "role": "user" },
+        "content": { "content_type": "text", "parts": ["Great, now write unit tests for it."] }
+      },
+      "parent": "node-assistant-1-v2",
+      "children": ["node-assistant-2"]
+    },
+    "node-assistant-2": {
+      "id": "node-assistant-2",
+      "message": {
+        "id": "msg-ast-2",
+        "author": { "role": "assistant" },
+        "content": { "content_type": "text", "parts": ["import unittest\nclass TestFib(unittest.TestCase):\n    def test_fib(self):\n        self.assertEqual(fib(0), 0)\n        self.assertEqual(fib(1), 1)\n        self.assertEqual(fib(5), 5)"] },
+        "metadata": { "model_slug": "gpt-4o" }
+      },
+      "parent": "node-user-2",
+      "children": []
+    }
+  }
+}

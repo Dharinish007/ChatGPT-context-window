@@ -1,0 +1,54 @@
+{
+  "title": "Quick Greeting",
+  "create_time": 1726900000.0,
+  "update_time": 1726900010.0,
+  "conversation_id": "c7a8b9d0-1234-5678-9abc-def012345678",
+  "current_node": "node-assistant-1",
+  "mapping": {
+    "node-root": {
+      "id": "node-root",
+      "message": null,
+      "parent": null,
+      "children": ["node-system"]
+    },
+    "node-system": {
+      "id": "node-system",
+      "message": {
+        "id": "msg-sys-1",
+        "author": { "role": "system" },
+        "content": { "content_type": "text", "parts": ["You are ChatGPT, a large language model trained by OpenAI."] },
+        "status": "finished_successfully",
+        "metadata": { "model_slug": "gpt-4o" }
+      },
+      "parent": "node-root",
+      "children": ["node-user-1"]
+    },
+    "node-user-1": {
+      "id": "node-user-1",
+      "message": {
+        "id": "msg-usr-1",
+        "author": { "role": "user" },
+        "content": { "content_type": "text", "parts": ["Hello! What is quantum computing in one sentence?"] },
+        "status": "finished_successfully",
+        "metadata": {}
+      },
+      "parent": "node-system",
+      "children": ["node-assistant-1"]
+    },
+    "node-assistant-1": {
+      "id": "node-assistant-1",
+      "message": {
+        "id": "msg-ast-1",
+        "author": { "role": "assistant" },
+        "content": {
+          "content_type": "text",
+          "parts": ["Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers."]
+        },
+        "status": "finished_successfully",
+        "metadata": { "model_slug": "gpt-4o" }
+      },
+      "parent": "node-user-1",
+      "children": []
+    }
+  }
+}

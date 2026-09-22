@@ -4,6 +4,7 @@
 
 import { runTokenizerTests } from './unit/tokenizer.test.js';
 import { runContextEngineTests } from './unit/context-engine.test.js';
+import { runConversationClientTests } from './unit/conversation-client.test.js';
 import { runDomExtractorTests } from './dom/extractor.test.js';
 
 console.log('========================================================');
@@ -27,10 +28,16 @@ totalPassed += r2.passed;
 totalFailed += r2.failed;
 console.log('');
 
-// 3. DOM extractor tests
-const r3 = runDomExtractorTests();
+// 3. Conversation client tests (Group B)
+const r3 = runConversationClientTests();
 totalPassed += r3.passed;
 totalFailed += r3.failed;
+console.log('');
+
+// 4. DOM extractor tests
+const r4 = runDomExtractorTests();
+totalPassed += r4.passed;
+totalFailed += r4.failed;
 console.log('');
 
 const t1 = performance.now();
