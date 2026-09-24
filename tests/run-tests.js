@@ -13,6 +13,7 @@ import { runModelPlanLimitsTests } from './unit/model-plan-limits.test.js';
 import { runBundleIntegrityTests } from './unit/bundle-integrity.test.js';
 import { runInterceptorTests } from './unit/interceptor.test.js';
 import { runLiveSourcesTests } from './unit/live-sources.test.js';
+import { runWidgetStateTests } from './unit/widget-state.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -87,6 +88,12 @@ console.log('');
 const r11 = await runLiveSourcesTests();
 totalPassed += r11.passed;
 totalFailed += r11.failed;
+console.log('');
+
+// 12. Provider-neutral widget view state
+const r12 = runWidgetStateTests();
+totalPassed += r12.passed;
+totalFailed += r12.failed;
 console.log('');
 
 const t1 = performance.now();

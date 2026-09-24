@@ -13,7 +13,8 @@ import { ModelDetector } from './model-detector.js';
 import { PlanDetector, normalizePlanTier, PlanTier } from './plan-detector.js';
 import { AttachmentDetector } from './attachment-detector.js';
 import { ToolDetector } from './tool-detector.js';
-import { OverlayUI } from './overlay-ui.js';
+import { ContextWidget } from './overlay-ui.js';
+import { toWidgetState } from './widget-state.js';
 import { ConversationClient } from './conversation-client.js';
 import { ChatGPTDOMObserver } from './chatgpt-dom.js';
 import { RequestObserver } from '../network/request-observer.js';
@@ -27,7 +28,11 @@ export class ContentScriptCoordinator {
     this.conversationClient = new ConversationClient();
     this.attachmentDetector = new AttachmentDetector();
     this.toolDetector = new ToolDetector();
-    this.overlayUI = new OverlayUI();
+    // UI adapter: the only ChatGPT-specific UI knowledge is the name and where the input is
+    this.overlayUI = new ContextWidget({
+      provider: 'ChatGPT',
+      findInput: () => document.querySelector('#prompt-textarea') || document.querySelector('form textarea')
+    });
     this.domObserver = null;
     this.latestState = null;
     this.activeConversationId = null;
@@ -553,7 +558,7 @@ export class ContentScriptCoordinator {
       this.latestState = contextState;
 
       // 10. Update in-page floating HUD
-      this.overlayUI.update(contextState);
+      this.overlayUI.update(toWidgetState(contextState, { provider: 'ChatGPT' }));
 
       // 11. Sync state to chrome.storage.session and background service worker
       this.syncState(contextState);
