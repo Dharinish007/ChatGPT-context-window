@@ -147,7 +147,8 @@ export class ContextCalculator {
     // Confidence evaluation with evidence-based factors (Group E + F)
     const confidence = ConfidenceEngine.evaluate({
       isAuthoritative: Boolean(authoritative?.tokens),
-      isModelKnown: model.id !== 'unknown',
+      // An unrecognized slug is displayed by name but is not "known": it has no limit
+      isModelKnown: model.id !== 'unknown' && model.recognized !== false,
       isLimitVerified: Boolean(contextWindow) && model.limitStatus !== 'UNVERIFIED',
       contextLimit: contextWindow,
       planTier,
@@ -161,7 +162,8 @@ export class ContextCalculator {
       completenessSource: completeness.completenessSource,
       isNetworkActive: Boolean(input.networkHealth?.networkAvailable),
       encoding: model.encoding || 'o200k_base',
-      conflicts: input.conflicts || []
+      conflicts: input.conflicts || [],
+      agreements: input.agreements
     });
 
     const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);
@@ -177,6 +179,7 @@ export class ContextCalculator {
         maxOutput: model.maxOutput || null,
         planTier,
         limitStatus: model.limitStatus || (contextWindow ? 'VERIFIED' : 'UNKNOWN'),
+        recognized: model.recognized !== false && model.id !== 'unknown',
         source: model.source || 'unverified',
         accuracy: accuracy.model
       },
@@ -192,6 +195,8 @@ export class ContextCalculator {
         conversation: conversationTokens,
         attachments: attachmentTokens,
         totalMeasurable: totalMeasurableTokens,
+        // Window minus measured tokens; hidden context is not measurable, so the true remainder is lower
+        remaining: contextWindow ? Math.max(0, contextWindow - totalMeasurableTokens) : null,
         formatted: {
           user: this.formatTokenCount(userTokens),
           assistant: this.formatTokenCount(assistantTokens),

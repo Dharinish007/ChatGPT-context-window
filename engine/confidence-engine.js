@@ -61,7 +61,8 @@ export class ConfidenceEngine {
       completenessSource = 'dom_complete',
       isNetworkActive = false,
       encoding = 'o200k_base',
-      conflicts = []
+      conflicts = [],
+      agreements // Fields confirmed by 2+ independent sources; undefined = legacy callers
     } = params;
 
     // 1. Authoritative exact system metadata (100% confidence)
@@ -137,14 +138,21 @@ export class ConfidenceEngine {
           text: `Source conflict on ${c.field}: ${c.winning.source} (${c.winning.value}) vs ${c.discarded.source} (${c.discarded.value})`
         });
       }
+    } else if (Array.isArray(agreements)) {
+      // Credit agreement only where sources were actually compared and matched
+      if (agreements.length > 0) {
+        score += 0.05;
+        factors.push({ type: 'positive', text: `Sources agree on ${agreements.join(', ')}` });
+      }
     } else if (completenessSource === 'authoritative_api' || (isNetworkActive && completenessSource === 'dom_complete')) {
       score += 0.05;
       factors.push({ type: 'positive', text: 'DOM/API agreement' });
     }
+    const hadAgreementBonus = factors.some(f => f.text === 'DOM/API agreement' || f.text.startsWith('Sources agree on'));
 
     // --- Factor E: Model Identity & Limits Verification (Group F) ---
     if (isModelKnown) {
-      if (!factors.some(f => f.text === 'DOM/API agreement')) {
+      if (!hadAgreementBonus) {
         score += 0.05;
       }
 

@@ -222,6 +222,29 @@ export class ModelDetector {
   }
 
   /**
+   * True when `slug` is `key` plus a date or word suffix: "gpt-4o-2024-08-06", "gpt-4o-latest",
+   * "gpt-4-turbo-preview". A leading version digit is rejected ("gpt-4-1-nano" is not "gpt-4").
+   * @param {string} slug
+   * @param {string} key
+   * @returns {boolean}
+   */
+  static modelKey(value) {
+    // Comparison identity for evidence merging: "gpt-5-6", "GPT-5.6" and "5.6 Instant" are the same
+    // model; "gpt-5-6-thinking" is not. Display values are left untouched.
+    return String(value || '').toLowerCase().trim()
+      .replace(/^chatgpt[\s-]*/, '')
+      .replace(/^gpt[\s-]*/, '')
+      .replace(/[\s._]+/g, '-')
+      .replace(/-instant$/, '');
+  }
+
+  static isVariantOf(slug, key) {
+    if (!slug.startsWith(key + '-')) return false;
+    const suffix = slug.slice(key.length + 1);
+    return /^(\d{4}(-\d{2}-\d{2})?|\d{8}|[a-z][a-z0-9-]*)$/.test(suffix);
+  }
+
+  /**
    * Resolves raw model string and plan tier against verified model database.
    * 
    * @param {string|null} rawModelString 
@@ -234,6 +257,7 @@ export class ModelDetector {
         id: 'unknown',
         planTier: rawPlanString ? normalizePlanTier(rawPlanString) : PlanTier.UNKNOWN,
         limitStatus: 'UNKNOWN',
+        recognized: false,
         ...this.fallback
       };
     }
@@ -250,12 +274,14 @@ export class ModelDetector {
       spec = this.models[normalized];
     } else {
       // Exact alias, then family regex patterns (current ChatGPT slugs change too often to list),
-      // then longest key contained in the string so "gpt-4o-mini-x" never resolves to "gpt-4o"
+      // then a dated/variant suffix of a known key ("gpt-4o-2024-08-06", "gpt-4o-mini-latest"),
+      // longest key first. Arbitrary substrings are NOT accepted: "gpt-4.1-nano" must not become
+      // legacy "gpt-4" (8K) just because it contains "gpt-4".
       const found =
         entries.find(([, s]) => s.aliases && s.aliases.includes(normalized)) ||
         entries.find(([, s]) => Array.isArray(s.patterns) && s.patterns.some(p => new RegExp(p, 'i').test(normalized))) ||
         entries
-          .filter(([modelId]) => normalized.includes(modelId))
+          .filter(([modelId]) => ModelDetector.isVariantOf(normalized, modelId))
           .sort((a, b) => b[0].length - a[0].length)[0];
       if (found) {
         [matchedId, spec] = found;
@@ -274,6 +300,7 @@ export class ModelDetector {
         maxOutput: null,
         planTier,
         limitStatus: 'UNKNOWN',
+        recognized: false, // Shown by name, but never given a context limit
         source: 'Unrecognized custom model or preview',
         lastVerified: null
       };
@@ -300,7 +327,8 @@ export class ModelDetector {
         limitStatus: limitResult.status,
         limitSource: limitResult.source,
         source: limitResult.source,
-        lastVerified: limitResult.lastVerified
+        lastVerified: limitResult.lastVerified,
+        recognized: true
       };
     }
 
@@ -318,7 +346,8 @@ export class ModelDetector {
       limitStatus: 'API_DEFAULT',
       limitSource: spec.apiSource || spec.source,
       source: spec.apiSource || spec.source,
-      lastVerified: spec.apiLastVerified || spec.lastVerified || null
+      lastVerified: spec.apiLastVerified || spec.lastVerified || null,
+      recognized: true
     };
   }
 

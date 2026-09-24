@@ -63,8 +63,11 @@ export function toWidgetState(s, opts = {}) {
 
   const confidence = s.confidence?.percentage ?? Math.round((s.confidence?.score || 0) * 100);
 
+  const isLowerBound = s.completeness?.isLowerBound ?? (!authoritative && Boolean(s.completeness?.domIsPartial));
+
   return {
     provider,
+    conversationId: s.observables?.conversationId || null,
     model,
     modelFamily,
     plan: tier ? tier.charAt(0).toUpperCase() + tier.slice(1) : null,
@@ -89,10 +92,13 @@ export function toWidgetState(s, opts = {}) {
     ],
     source: authoritative ? 'Full conversation (API)' : dataSource === 'dom_fallback' ? 'Page text (API unavailable)' : 'Page text',
     turns: s.observables?.messagesCount ?? 0,
+    // usedTokens counts visible conversation text only; true when turns may also be missing
+    isLowerBound,
+    conflicts: (s.conflicts || []).map(c => ({ field: c.field, winning: c.winning, discarded: c.discarded })),
     // Only warn when the count really depends on what the page has rendered
     warning: s.observables?.apiError
       ? s.observables.apiError
-      : (!authoritative && s.completeness?.domIsPartial ? 'Count may be low: only turns rendered on the page were read.' : null),
+      : (isLowerBound ? 'Count may be low: only turns rendered on the page were read.' : null),
     diagnostics: s.diagnostics || null,
     ready: true
   };

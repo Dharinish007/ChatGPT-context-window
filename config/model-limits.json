@@ -96,8 +96,8 @@
         "o4-mini-high"
       ],
       "patterns": [
-        "^o[3-9](-|$)",
-        "^(gpt-?)?[5-9][\\w.]*([\\s-][\\w.]+)*[\\s-](thinking|reasoning|pro|t)([\\s-]|$)"
+        "^o[34](-|$)",
+        "^(gpt-?)?[56][\\w.]*([\\s-][\\w.]+)*[\\s-](thinking|reasoning|pro|t)([\\s-]|$)"
       ],
       "encoding": "o200k_base",
       "apiContextLimit": null,
@@ -169,7 +169,7 @@
         "gpt-4-1-mini"
       ],
       "patterns": [
-        "^(gpt-?)?[5-9]([.\\s-]|$)"
+        "^(gpt-?)?[56]([.\\s-]|$)"
       ],
       "encoding": "o200k_base",
       "apiContextLimit": null,

@@ -56,6 +56,17 @@ export function normalizePlanTier(rawString) {
     return PlanTier.EDU;
   }
 
+  // Compact forms seen in account/entitlement fields: "chatgptplusplan", "chatgpt_team_plan",
+  // "pro_subscription". Exact match after stripping decoration; anything else stays unknown.
+  const compact = s.replace(/[^a-z0-9]/g, '').replace(/^chatgpt/, '').replace(/(plan|subscriber|subscription|tier)$/, '');
+  const exact = {
+    free: PlanTier.FREE, go: PlanTier.GO, plus: PlanTier.PLUS, pro: PlanTier.PRO, team: PlanTier.TEAM,
+    business: PlanTier.BUSINESS, enterprise: PlanTier.ENTERPRISE, edu: PlanTier.EDU
+  };
+  if (exact[compact]) {
+    return exact[compact];
+  }
+
   return PlanTier.UNKNOWN;
 }
 
@@ -90,7 +101,8 @@ export class PlanDetector {
       const el = root.querySelector(sel);
       if (el) {
         const text = (el.innerText || el.textContent || '').trim();
-        if (text) {
+        // Upsell buttons ("Upgrade to Pro", "Get Plus") name a plan the user does NOT have
+        if (text && !/\b(upgrade|get|try|buy)\b/i.test(text)) {
           if (/\bPro\b/i.test(text)) {
             return { value: PlanTier.PRO, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
           }
@@ -117,16 +129,18 @@ export class PlanDetector {
     const headerEl = root.querySelector('header') || root.querySelector('nav');
     if (headerEl) {
       const headerText = (headerEl.innerText || headerEl.textContent || '');
-      if (/ChatGPT\s+Pro\b/i.test(headerText)) {
+      // "ChatGPT Pro" as a label, not inside an upsell like "Upgrade to ChatGPT Pro" / "Get ChatGPT Plus"
+      const label = (plan) => new RegExp(`(?<!(upgrade to|get|try)\\s+)ChatGPT\\s+${plan}\\b`, 'i').test(headerText);
+      if (label('Pro')) {
         return { value: PlanTier.PRO, raw: 'ChatGPT Pro', source: 'dom', evidenceType: 'OBSERVED' };
       }
-      if (/ChatGPT\s+Enterprise\b/i.test(headerText)) {
+      if (label('Enterprise')) {
         return { value: PlanTier.ENTERPRISE, raw: 'ChatGPT Enterprise', source: 'dom', evidenceType: 'OBSERVED' };
       }
-      if (/ChatGPT\s+Team\b/i.test(headerText)) {
+      if (label('Team')) {
         return { value: PlanTier.TEAM, raw: 'ChatGPT Team', source: 'dom', evidenceType: 'OBSERVED' };
       }
-      if (/ChatGPT\s+Plus\b/i.test(headerText)) {
+      if (label('Plus')) {
         return { value: PlanTier.PLUS, raw: 'ChatGPT Plus', source: 'dom', evidenceType: 'OBSERVED' };
       }
     }
@@ -148,8 +162,8 @@ export class PlanDetector {
           return {
             value: PlanTier.FREE,
             raw: text,
-            source: 'dom',
-            evidenceType: 'OBSERVED'
+            source: 'dom_heuristic', // Inferred from an upgrade prompt, not a plan label
+            evidenceType: 'ESTIMATED'
           };
         }
       }
@@ -163,8 +177,8 @@ export class PlanDetector {
         return {
           value: PlanTier.FREE,
           raw: txt,
-          source: 'dom',
-          evidenceType: 'OBSERVED'
+          source: 'dom_heuristic', // Inferred from an upgrade prompt, not a plan label
+          evidenceType: 'ESTIMATED'
         };
       }
     }

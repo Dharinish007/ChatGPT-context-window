@@ -110,8 +110,8 @@
         "o4-mini-high"
       ],
       "patterns": [
-        "^o[3-9](-|$)",
-        "^(gpt-?)?[5-9][\\w.]*([\\s-][\\w.]+)*[\\s-](thinking|reasoning|pro|t)([\\s-]|$)"
+        "^o[34](-|$)",
+        "^(gpt-?)?[56][\\w.]*([\\s-][\\w.]+)*[\\s-](thinking|reasoning|pro|t)([\\s-]|$)"
       ],
       "encoding": "o200k_base",
       "apiContextLimit": null,
@@ -183,7 +183,7 @@
         "gpt-4-1-mini"
       ],
       "patterns": [
-        "^(gpt-?)?[5-9]([.\\s-]|$)"
+        "^(gpt-?)?[56]([.\\s-]|$)"
       ],
       "encoding": "o200k_base",
       "apiContextLimit": null,
@@ -1505,7 +1505,11 @@ class ContextClassifier {
 
 
 
+// Precedence (highest wins). live_network is the model seen in THIS conversation's own
+// request/stream on this page, i.e. the newest reply, so it outranks the saved API tree for
+// the model field only. dom_heuristic is inference (e.g. an upgrade button), never a label.
 const SourcePriority = Object.freeze({
+  live_network: 5,
   conversation_api: 4,
   session_api: 4,
   authoritative_api: 4,
@@ -1517,6 +1521,7 @@ const SourcePriority = Object.freeze({
   model_db: 1,
   tokenizer: 1,
   heuristic: 1,
+  dom_heuristic: 1,
   unknown: 0
 });
 
@@ -1569,7 +1574,8 @@ class EvidenceMerger {
       const otherPriority = SourcePriority[other.source] ?? 0;
       if (otherPriority < 2) continue; // Ignore low-confidence heuristics
 
-      const isDisagreement = this._isDisagreement(fieldName, winner.value, other.value);
+      // compareKey lets a field compare normalized identities ("gpt-5-6" vs "GPT-5.6")
+      const isDisagreement = this._isDisagreement(fieldName, winner.compareKey ?? winner.value, other.compareKey ?? other.value);
       if (isDisagreement) {
         conflicts.push({
           field: fieldName,
@@ -1644,6 +1650,16 @@ class EvidenceMerger {
       allConflicts.push(...planResult.conflicts);
     }
 
+    // Fields where at least two independent, non-heuristic sources reported the same value.
+    // Only these may raise confidence as "agreement"; absence of a conflict alone is not agreement.
+    const agreements = [
+      ['model', input.modelCandidates], ['plan', input.planCandidates], ['turns', input.turnCandidates]
+    ].filter(([field, cands]) => {
+      const strong = (cands || []).filter(c => c && c.value !== null && c.value !== undefined && c.value !== '' &&
+        c.value !== 'unknown' && (SourcePriority[c.source] ?? 0) >= 2);
+      return new Set(strong.map(c => c.source)).size >= 2 && !allConflicts.some(k => k.field === field);
+    }).map(([field]) => field);
+
     const completeness = input.completeness || {};
     const networkHealth = input.networkHealth || {};
 
@@ -1686,7 +1702,8 @@ class EvidenceMerger {
         contextWindow: {
           value: input.tokens.contextWindow ?? null,
           source: 'model_db',
-          evidenceType: input.tokens.contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+          // Looked up from a curated table, not reported by the provider, so never EXACT
+          evidenceType: input.tokens.contextWindow ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
         }
       } : null,
       limit: {
@@ -1702,13 +1719,15 @@ class EvidenceMerger {
         evidenceType: EvidenceType.UNKNOWN
       },
       conflicts: allConflicts,
-      hasConflicts: allConflicts.length > 0
+      hasConflicts: allConflicts.length > 0,
+      agreements
     };
 
     return {
       evidence,
       conflicts: allConflicts,
-      hasConflicts: allConflicts.length > 0
+      hasConflicts: allConflicts.length > 0,
+      agreements
     };
   }
 
@@ -1792,7 +1811,8 @@ class ConfidenceEngine {
       completenessSource = 'dom_complete',
       isNetworkActive = false,
       encoding = 'o200k_base',
-      conflicts = []
+      conflicts = [],
+      agreements // Fields confirmed by 2+ independent sources; undefined = legacy callers
     } = params;
 
     // 1. Authoritative exact system metadata (100% confidence)
@@ -1868,14 +1888,21 @@ class ConfidenceEngine {
           text: `Source conflict on ${c.field}: ${c.winning.source} (${c.winning.value}) vs ${c.discarded.source} (${c.discarded.value})`
         });
       }
+    } else if (Array.isArray(agreements)) {
+      // Credit agreement only where sources were actually compared and matched
+      if (agreements.length > 0) {
+        score += 0.05;
+        factors.push({ type: 'positive', text: `Sources agree on ${agreements.join(', ')}` });
+      }
     } else if (completenessSource === 'authoritative_api' || (isNetworkActive && completenessSource === 'dom_complete')) {
       score += 0.05;
       factors.push({ type: 'positive', text: 'DOM/API agreement' });
     }
+    const hadAgreementBonus = factors.some(f => f.text === 'DOM/API agreement' || f.text.startsWith('Sources agree on'));
 
     // --- Factor E: Model Identity & Limits Verification (Group F) ---
     if (isModelKnown) {
-      if (!factors.some(f => f.text === 'DOM/API agreement')) {
+      if (!hadAgreementBonus) {
         score += 0.05;
       }
 
@@ -2107,7 +2134,8 @@ class ContextCalculator {
     // Confidence evaluation with evidence-based factors (Group E + F)
     const confidence = ConfidenceEngine.evaluate({
       isAuthoritative: Boolean(authoritative?.tokens),
-      isModelKnown: model.id !== 'unknown',
+      // An unrecognized slug is displayed by name but is not "known": it has no limit
+      isModelKnown: model.id !== 'unknown' && model.recognized !== false,
       isLimitVerified: Boolean(contextWindow) && model.limitStatus !== 'UNVERIFIED',
       contextLimit: contextWindow,
       planTier,
@@ -2121,7 +2149,8 @@ class ContextCalculator {
       completenessSource: completeness.completenessSource,
       isNetworkActive: Boolean(input.networkHealth?.networkAvailable),
       encoding: model.encoding || 'o200k_base',
-      conflicts: input.conflicts || []
+      conflicts: input.conflicts || [],
+      agreements: input.agreements
     });
 
     const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);
@@ -2137,6 +2166,7 @@ class ContextCalculator {
         maxOutput: model.maxOutput || null,
         planTier,
         limitStatus: model.limitStatus || (contextWindow ? 'VERIFIED' : 'UNKNOWN'),
+        recognized: model.recognized !== false && model.id !== 'unknown',
         source: model.source || 'unverified',
         accuracy: accuracy.model
       },
@@ -2152,6 +2182,8 @@ class ContextCalculator {
         conversation: conversationTokens,
         attachments: attachmentTokens,
         totalMeasurable: totalMeasurableTokens,
+        // Window minus measured tokens; hidden context is not measurable, so the true remainder is lower
+        remaining: contextWindow ? Math.max(0, contextWindow - totalMeasurableTokens) : null,
         formatted: {
           user: this.formatTokenCount(userTokens),
           assistant: this.formatTokenCount(assistantTokens),
@@ -3148,6 +3180,7 @@ class ConversationClient {
     const allAttachments = [];
     let detectedModelSlug = null;
     let turnIndex = 0;
+    let hiddenMessages = 0; // Server-injected context messages (not measurable as visible turns)
 
     for (let i = 0; i < activeNodes.length; i++) {
       const node = activeNodes[i];
@@ -3158,6 +3191,15 @@ class ConversationClient {
       // Ignore system instructions if they are standard internal framing
       if (role === 'system') continue;
 
+      // Hidden context injected server-side (custom instructions, memory) is not a visible turn.
+      // Counting it would inflate "You" and the turn count; it stays in the UNKNOWN hidden context.
+      const contentType = msg.content?.content_type;
+      if (msg.metadata?.is_visually_hidden_from_conversation ||
+          contentType === 'user_editable_context' || contentType === 'model_editable_context') {
+        hiddenMessages++;
+        continue;
+      }
+
       const parts = this.normalizeParts(msg.content);
       const attachments = this.normalizeAttachments(msg.metadata);
 
@@ -3165,6 +3207,10 @@ class ConversationClient {
       if (role === 'assistant' && msg.metadata?.model_slug) {
         detectedModelSlug = msg.metadata.model_slug;
       }
+
+      // Reasoning traces ("thoughts", "reasoning_recap") carry no parts and are not resent as context;
+      // an empty message must not count as a turn
+      if (parts.length === 0 && attachments.length === 0) continue;
 
       // Combine text parts for backward compatibility
       const textParts = parts.filter(p => p.type === 'text' && p.text);
@@ -3218,6 +3264,7 @@ class ConversationClient {
       conversationId: conversationPayload.conversation_id || null,
       title: conversationPayload.title || '',
       modelSlug: detectedModelSlug || conversationPayload.default_model_slug || null,
+      hiddenMessages,
       messages,
       attachments: {
         count: allAttachments.length,
@@ -3492,6 +3539,17 @@ function normalizePlanTier(rawString) {
     return PlanTier.EDU;
   }
 
+  // Compact forms seen in account/entitlement fields: "chatgptplusplan", "chatgpt_team_plan",
+  // "pro_subscription". Exact match after stripping decoration; anything else stays unknown.
+  const compact = s.replace(/[^a-z0-9]/g, '').replace(/^chatgpt/, '').replace(/(plan|subscriber|subscription|tier)$/, '');
+  const exact = {
+    free: PlanTier.FREE, go: PlanTier.GO, plus: PlanTier.PLUS, pro: PlanTier.PRO, team: PlanTier.TEAM,
+    business: PlanTier.BUSINESS, enterprise: PlanTier.ENTERPRISE, edu: PlanTier.EDU
+  };
+  if (exact[compact]) {
+    return exact[compact];
+  }
+
   return PlanTier.UNKNOWN;
 }
 
@@ -3526,7 +3584,8 @@ class PlanDetector {
       const el = root.querySelector(sel);
       if (el) {
         const text = (el.innerText || el.textContent || '').trim();
-        if (text) {
+        // Upsell buttons ("Upgrade to Pro", "Get Plus") name a plan the user does NOT have
+        if (text && !/\b(upgrade|get|try|buy)\b/i.test(text)) {
           if (/\bPro\b/i.test(text)) {
             return { value: PlanTier.PRO, raw: text, source: 'dom', evidenceType: 'OBSERVED' };
           }
@@ -3553,16 +3612,18 @@ class PlanDetector {
     const headerEl = root.querySelector('header') || root.querySelector('nav');
     if (headerEl) {
       const headerText = (headerEl.innerText || headerEl.textContent || '');
-      if (/ChatGPT\s+Pro\b/i.test(headerText)) {
+      // "ChatGPT Pro" as a label, not inside an upsell like "Upgrade to ChatGPT Pro" / "Get ChatGPT Plus"
+      const label = (plan) => new RegExp(`(?<!(upgrade to|get|try)\\s+)ChatGPT\\s+${plan}\\b`, 'i').test(headerText);
+      if (label('Pro')) {
         return { value: PlanTier.PRO, raw: 'ChatGPT Pro', source: 'dom', evidenceType: 'OBSERVED' };
       }
-      if (/ChatGPT\s+Enterprise\b/i.test(headerText)) {
+      if (label('Enterprise')) {
         return { value: PlanTier.ENTERPRISE, raw: 'ChatGPT Enterprise', source: 'dom', evidenceType: 'OBSERVED' };
       }
-      if (/ChatGPT\s+Team\b/i.test(headerText)) {
+      if (label('Team')) {
         return { value: PlanTier.TEAM, raw: 'ChatGPT Team', source: 'dom', evidenceType: 'OBSERVED' };
       }
-      if (/ChatGPT\s+Plus\b/i.test(headerText)) {
+      if (label('Plus')) {
         return { value: PlanTier.PLUS, raw: 'ChatGPT Plus', source: 'dom', evidenceType: 'OBSERVED' };
       }
     }
@@ -3584,8 +3645,8 @@ class PlanDetector {
           return {
             value: PlanTier.FREE,
             raw: text,
-            source: 'dom',
-            evidenceType: 'OBSERVED'
+            source: 'dom_heuristic', // Inferred from an upgrade prompt, not a plan label
+            evidenceType: 'ESTIMATED'
           };
         }
       }
@@ -3599,8 +3660,8 @@ class PlanDetector {
         return {
           value: PlanTier.FREE,
           raw: txt,
-          source: 'dom',
-          evidenceType: 'OBSERVED'
+          source: 'dom_heuristic', // Inferred from an upgrade prompt, not a plan label
+          evidenceType: 'ESTIMATED'
         };
       }
     }
@@ -3840,6 +3901,29 @@ class ModelDetector {
   }
 
   /**
+   * True when `slug` is `key` plus a date or word suffix: "gpt-4o-2024-08-06", "gpt-4o-latest",
+   * "gpt-4-turbo-preview". A leading version digit is rejected ("gpt-4-1-nano" is not "gpt-4").
+   * @param {string} slug
+   * @param {string} key
+   * @returns {boolean}
+   */
+  static modelKey(value) {
+    // Comparison identity for evidence merging: "gpt-5-6", "GPT-5.6" and "5.6 Instant" are the same
+    // model; "gpt-5-6-thinking" is not. Display values are left untouched.
+    return String(value || '').toLowerCase().trim()
+      .replace(/^chatgpt[\s-]*/, '')
+      .replace(/^gpt[\s-]*/, '')
+      .replace(/[\s._]+/g, '-')
+      .replace(/-instant$/, '');
+  }
+
+  static isVariantOf(slug, key) {
+    if (!slug.startsWith(key + '-')) return false;
+    const suffix = slug.slice(key.length + 1);
+    return /^(\d{4}(-\d{2}-\d{2})?|\d{8}|[a-z][a-z0-9-]*)$/.test(suffix);
+  }
+
+  /**
    * Resolves raw model string and plan tier against verified model database.
    * 
    * @param {string|null} rawModelString 
@@ -3852,6 +3936,7 @@ class ModelDetector {
         id: 'unknown',
         planTier: rawPlanString ? normalizePlanTier(rawPlanString) : PlanTier.UNKNOWN,
         limitStatus: 'UNKNOWN',
+        recognized: false,
         ...this.fallback
       };
     }
@@ -3868,12 +3953,14 @@ class ModelDetector {
       spec = this.models[normalized];
     } else {
       // Exact alias, then family regex patterns (current ChatGPT slugs change too often to list),
-      // then longest key contained in the string so "gpt-4o-mini-x" never resolves to "gpt-4o"
+      // then a dated/variant suffix of a known key ("gpt-4o-2024-08-06", "gpt-4o-mini-latest"),
+      // longest key first. Arbitrary substrings are NOT accepted: "gpt-4.1-nano" must not become
+      // legacy "gpt-4" (8K) just because it contains "gpt-4".
       const found =
         entries.find(([, s]) => s.aliases && s.aliases.includes(normalized)) ||
         entries.find(([, s]) => Array.isArray(s.patterns) && s.patterns.some(p => new RegExp(p, 'i').test(normalized))) ||
         entries
-          .filter(([modelId]) => normalized.includes(modelId))
+          .filter(([modelId]) => ModelDetector.isVariantOf(normalized, modelId))
           .sort((a, b) => b[0].length - a[0].length)[0];
       if (found) {
         [matchedId, spec] = found;
@@ -3892,6 +3979,7 @@ class ModelDetector {
         maxOutput: null,
         planTier,
         limitStatus: 'UNKNOWN',
+        recognized: false, // Shown by name, but never given a context limit
         source: 'Unrecognized custom model or preview',
         lastVerified: null
       };
@@ -3918,7 +4006,8 @@ class ModelDetector {
         limitStatus: limitResult.status,
         limitSource: limitResult.source,
         source: limitResult.source,
-        lastVerified: limitResult.lastVerified
+        lastVerified: limitResult.lastVerified,
+        recognized: true
       };
     }
 
@@ -3936,7 +4025,8 @@ class ModelDetector {
       limitStatus: 'API_DEFAULT',
       limitSource: spec.apiSource || spec.source,
       source: spec.apiSource || spec.source,
-      lastVerified: spec.apiLastVerified || spec.lastVerified || null
+      lastVerified: spec.apiLastVerified || spec.lastVerified || null,
+      recognized: true
     };
   }
 
@@ -4170,8 +4260,11 @@ function toWidgetState(s, opts = {}) {
 
   const confidence = s.confidence?.percentage ?? Math.round((s.confidence?.score || 0) * 100);
 
+  const isLowerBound = s.completeness?.isLowerBound ?? (!authoritative && Boolean(s.completeness?.domIsPartial));
+
   return {
     provider,
+    conversationId: s.observables?.conversationId || null,
     model,
     modelFamily,
     plan: tier ? tier.charAt(0).toUpperCase() + tier.slice(1) : null,
@@ -4196,10 +4289,13 @@ function toWidgetState(s, opts = {}) {
     ],
     source: authoritative ? 'Full conversation (API)' : dataSource === 'dom_fallback' ? 'Page text (API unavailable)' : 'Page text',
     turns: s.observables?.messagesCount ?? 0,
+    // usedTokens counts visible conversation text only; true when turns may also be missing
+    isLowerBound,
+    conflicts: (s.conflicts || []).map(c => ({ field: c.field, winning: c.winning, discarded: c.discarded })),
     // Only warn when the count really depends on what the page has rendered
     warning: s.observables?.apiError
       ? s.observables.apiError
-      : (!authoritative && s.completeness?.domIsPartial ? 'Count may be low: only turns rendered on the page were read.' : null),
+      : (isLowerBound ? 'Count may be low: only turns rendered on the page were read.' : null),
     diagnostics: s.diagnostics || null,
     ready: true
   };
@@ -5087,7 +5183,12 @@ class ContentScriptCoordinator {
         }
         if (authResult.success && authResult.data) {
           normalized = this.conversationClient.normalizeConversation(authResult.data);
-          if (normalized.messages && normalized.messages.length > 0) {
+          // A payload for a different conversation (mis-keyed capture) must never be used here
+          if (normalized.conversationId && normalized.conversationId !== conversationId) {
+            apiError = 'Conversation data belonged to a different conversation; ignored';
+            normalized = null;
+          }
+          if (normalized && normalized.messages && normalized.messages.length > 0) {
             effectiveMessages = [...normalized.messages];
             authMessagesCount = normalized.messages.length;
             dataSource = 'authoritative';
@@ -5131,9 +5232,9 @@ class ContentScriptCoordinator {
       const encoding = model?.encoding || 'o200k_base';
 
       // 6. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
-      const tokenizedMessages = effectiveMessages.map(msg => {
+      const tokenize = (enc) => effectiveMessages.map(msg => {
         const parts = msg.parts || [{ type: 'text', text: msg.text }];
-        const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, encoding);
+        const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, enc);
         return {
           id: msg.id,
           role: msg.role,
@@ -5143,6 +5244,7 @@ class ContentScriptCoordinator {
           isStreaming: Boolean(msg.isStreaming)
         };
       });
+      let tokenizedMessages = tokenize(encoding);
 
       // 7. Detect tools from both DOM and Network
       const domTools = this.toolDetector.detect(document);
@@ -5165,6 +5267,11 @@ class ContentScriptCoordinator {
         list: combinedToolList
       };
 
+      // Turns the page can render (tool output and hidden context are not rendered as turns)
+      const apiVisibleTurns = normalized
+        ? normalized.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
+        : null;
+
       // 8. Reconcile Completeness & Virtualization (Group D)
       const renderedTurnCount = rawDomMessages.length;
       let authoritativeTurnCount = null;
@@ -5174,7 +5281,7 @@ class ContentScriptCoordinator {
       let completenessSource = 'dom_complete';
 
       if (dataSource === 'authoritative' && authMessagesCount !== null) {
-        authoritativeTurnCount = authMessagesCount;
+        authoritativeTurnCount = apiVisibleTurns;
         completenessSource = 'authoritative_api';
         if (authoritativeTurnCount > renderedTurnCount) {
           domIsPartial = true;
@@ -5210,105 +5317,68 @@ class ContentScriptCoordinator {
       // 9. Multi-Source Candidate Assembly & Evidence Reconciliation (Group E)
       const networkHealth = this.requestObserver.getHealth();
 
+      // MODEL precedence (highest first):
+      //   live_network     - model of THIS conversation's request/stream on this page (newest reply;
+      //                      observer resets on conversation switch, ignores prefetched conversations)
+      //   conversation_api - latest assistant model_slug on the active branch of the saved tree
+      //   dom              - latest data-message-model-slug, else model-like header text
+      // Candidates compare by a normalized key so "gpt-5-6" and "GPT-5.6 Instant" are not a conflict.
+      const modelKey = ModelDetector.modelKey;
       const modelCandidates = [];
-      if (normalized?.modelSlug) {
-        modelCandidates.push({
-          value: normalized.modelSlug,
-          source: 'conversation_api',
-          evidenceType: EvidenceType.EXACT
-        });
-      }
       if (netModel && netModel.value) {
-        modelCandidates.push({
-          value: netModel.value,
-          source: 'network',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        modelCandidates.push({ value: netModel.value, compareKey: modelKey(netModel.value), source: 'live_network', evidenceType: EvidenceType.OBSERVED });
+      }
+      if (normalized?.modelSlug) {
+        modelCandidates.push({ value: normalized.modelSlug, compareKey: modelKey(normalized.modelSlug), source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
       const domModel = this.modelDetector.detect(document);
       // Pass the raw slug (not the resolved family key) so the UI shows the real model name
       const domModelRaw = this.modelDetector.detectRawModelString(document);
       if (domModelRaw && domModel && domModel.id !== 'unknown') {
-        modelCandidates.push({
-          value: domModelRaw,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        modelCandidates.push({ value: domModelRaw, compareKey: modelKey(domModelRaw), source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
 
+      // TURNS: the page renders a subset (virtualized history, no tool turns). Fewer DOM turns is
+      // expected, not a contradiction; equal counts are agreement; MORE DOM turns than the API has
+      // means the API copy is stale, which is recorded as a conflict.
       const turnCandidates = [];
-      if (authMessagesCount !== null) {
-        turnCandidates.push({
-          value: authMessagesCount,
-          source: 'conversation_api',
-          evidenceType: EvidenceType.EXACT
-        });
+      if (apiVisibleTurns !== null) {
+        turnCandidates.push({ value: apiVisibleTurns, source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
-      if (rawDomMessages && rawDomMessages.length > 0) {
-        turnCandidates.push({
-          value: rawDomMessages.length,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+      if (rawDomMessages.length > 0 && (apiVisibleTurns === null || rawDomMessages.length >= apiVisibleTurns)) {
+        turnCandidates.push({ value: rawDomMessages.length, source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
 
+      // ATTACHMENTS: same subset rule as turns
       const attachmentCandidates = [];
       if (normalized?.attachments) {
-        attachmentCandidates.push({
-          value: normalized.attachments.count,
-          source: 'conversation_api',
-          evidenceType: EvidenceType.EXACT
-        });
+        attachmentCandidates.push({ value: normalized.attachments.count, source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
       const domAttachments = this.attachmentDetector.detect(document);
-      if (domAttachments) {
-        attachmentCandidates.push({
-          value: domAttachments.count,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+      if (domAttachments && (!normalized?.attachments || domAttachments.count >= normalized.attachments.count)) {
+        attachmentCandidates.push({ value: domAttachments.count, source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
 
-      const toolCandidates = [];
-      if (netTools.length > 0) {
-        toolCandidates.push({
-          value: netTools.map(t => t.name).join(','),
-          source: 'network',
-          evidenceType: EvidenceType.OBSERVED
-        });
-      }
-      if (domTools.list.length > 0) {
-        toolCandidates.push({
-          value: domTools.list.map(t => t.type).join(','),
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
-      }
+      // TOOLS: sources name tools differently ("web.run" vs "web_search") and each sees a subset;
+      // they are combined (union), not treated as competing claims
+      const toolCandidates = tools.list.length > 0
+        ? [{ value: tools.list.map(t => t.type).join(','), source: netTools.length > 0 ? 'network' : 'dom', evidenceType: EvidenceType.OBSERVED }]
+        : [];
 
-      // Plan candidates (Group F)
+      // PLAN precedence (account-level, never taken from a conversation):
+      //   session_api (/api/auth/session account.planType) > network (accounts/check account.plan_type)
+      //   > dom (explicit plan label) > dom_heuristic (upgrade prompt; never creates a conflict)
       const planCandidates = [];
       if (session?.planType) {
-        planCandidates.push({
-          value: normalizePlanTier(session.planType),
-          source: 'session_api',
-          evidenceType: EvidenceType.EXACT
-        });
+        planCandidates.push({ value: normalizePlanTier(session.planType), source: 'session_api', evidenceType: EvidenceType.EXACT });
       }
       const netPlan = this.requestObserver.getObservedPlan();
       if (netPlan && netPlan.value) {
-        planCandidates.push({
-          value: normalizePlanTier(netPlan.value),
-          source: 'network',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        planCandidates.push({ value: normalizePlanTier(netPlan.value), source: 'network', evidenceType: EvidenceType.OBSERVED });
       }
       const domPlan = this.planDetector.detect(document);
       if (domPlan && domPlan.value && domPlan.value !== PlanTier.UNKNOWN) {
-        planCandidates.push({
-          value: domPlan.value,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        planCandidates.push({ value: domPlan.value, source: domPlan.source === 'dom_heuristic' ? 'dom_heuristic' : 'dom', evidenceType: domPlan.evidenceType || EvidenceType.OBSERVED });
       }
 
       const reconciled = EvidenceMerger.reconcileState({
@@ -5322,9 +5392,12 @@ class ContentScriptCoordinator {
       });
 
       // Update model + plan-aware limits with winning evidence
-      const winningPlan = reconciled.evidence?.plan?.value || domPlan?.value || PlanTier.UNKNOWN;
-      const winningModelSlug = reconciled.evidence?.model?.value || domModelRaw || null;
+      const winningPlan = reconciled.evidence?.plan?.value || PlanTier.UNKNOWN;
+      const winningModelSlug = reconciled.evidence?.model?.value || null;
       model = this.modelDetector.resolveModel(winningModelSlug, winningPlan);
+      if (model.encoding && model.encoding !== encoding) {
+        tokenizedMessages = tokenize(model.encoding); // Count with the winning model's tokenizer
+      }
 
       // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
@@ -5341,6 +5414,7 @@ class ContentScriptCoordinator {
         isPartial: !conversationComplete,
         evidence: reconciled.evidence,
         conflicts: reconciled.conflicts,
+        agreements: reconciled.agreements,
         networkHealth
       });
 
@@ -5351,6 +5425,11 @@ class ContentScriptCoordinator {
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
       contextState.observables.network = networkHealth;
       contextState.observables.plan = winningPlan;
+      contextState.observables.hiddenMessagesExcluded = normalized?.hiddenMessages || 0;
+      // Measured tokens are a lower bound when turns may be missing (API unavailable for an existing
+      // conversation). Hidden system/memory context is never measured, so it is always excluded.
+      contextState.completeness.isLowerBound = !conversationComplete;
+      contextState.completeness.hiddenContextMeasured = false;
 
       // Structure-only snapshot for the "Copy diagnostics" button: no message text, no token
       contextState.diagnostics = {

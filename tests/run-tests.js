@@ -15,6 +15,7 @@ import { runInterceptorTests } from './unit/interceptor.test.js';
 import { runLiveSourcesTests } from './unit/live-sources.test.js';
 import { runWidgetStateTests } from './unit/widget-state.test.js';
 import { runReliabilityTests } from './unit/reliability.test.js';
+import { runAccuracyTests } from './unit/accuracy.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -101,6 +102,12 @@ console.log('');
 const r13 = await runReliabilityTests();
 totalPassed += r13.passed;
 totalFailed += r13.failed;
+console.log('');
+
+// 14. Context accuracy + model/plan intelligence
+const r14 = await runAccuracyTests();
+totalPassed += r14.passed;
+totalFailed += r14.failed;
 console.log('');
 
 const t1 = performance.now();

@@ -410,6 +410,7 @@ export class ConversationClient {
     const allAttachments = [];
     let detectedModelSlug = null;
     let turnIndex = 0;
+    let hiddenMessages = 0; // Server-injected context messages (not measurable as visible turns)
 
     for (let i = 0; i < activeNodes.length; i++) {
       const node = activeNodes[i];
@@ -420,6 +421,15 @@ export class ConversationClient {
       // Ignore system instructions if they are standard internal framing
       if (role === 'system') continue;
 
+      // Hidden context injected server-side (custom instructions, memory) is not a visible turn.
+      // Counting it would inflate "You" and the turn count; it stays in the UNKNOWN hidden context.
+      const contentType = msg.content?.content_type;
+      if (msg.metadata?.is_visually_hidden_from_conversation ||
+          contentType === 'user_editable_context' || contentType === 'model_editable_context') {
+        hiddenMessages++;
+        continue;
+      }
+
       const parts = this.normalizeParts(msg.content);
       const attachments = this.normalizeAttachments(msg.metadata);
 
@@ -427,6 +437,10 @@ export class ConversationClient {
       if (role === 'assistant' && msg.metadata?.model_slug) {
         detectedModelSlug = msg.metadata.model_slug;
       }
+
+      // Reasoning traces ("thoughts", "reasoning_recap") carry no parts and are not resent as context;
+      // an empty message must not count as a turn
+      if (parts.length === 0 && attachments.length === 0) continue;
 
       // Combine text parts for backward compatibility
       const textParts = parts.filter(p => p.type === 'text' && p.text);
@@ -480,6 +494,7 @@ export class ConversationClient {
       conversationId: conversationPayload.conversation_id || null,
       title: conversationPayload.title || '',
       modelSlug: detectedModelSlug || conversationPayload.default_model_slug || null,
+      hiddenMessages,
       messages,
       attachments: {
         count: allAttachments.length,

@@ -13,7 +13,11 @@ import { EvidenceType } from './context-classifier.js';
 
 export { EvidenceType };
 
+// Precedence (highest wins). live_network is the model seen in THIS conversation's own
+// request/stream on this page, i.e. the newest reply, so it outranks the saved API tree for
+// the model field only. dom_heuristic is inference (e.g. an upgrade button), never a label.
 export const SourcePriority = Object.freeze({
+  live_network: 5,
   conversation_api: 4,
   session_api: 4,
   authoritative_api: 4,
@@ -25,6 +29,7 @@ export const SourcePriority = Object.freeze({
   model_db: 1,
   tokenizer: 1,
   heuristic: 1,
+  dom_heuristic: 1,
   unknown: 0
 });
 
@@ -77,7 +82,8 @@ export class EvidenceMerger {
       const otherPriority = SourcePriority[other.source] ?? 0;
       if (otherPriority < 2) continue; // Ignore low-confidence heuristics
 
-      const isDisagreement = this._isDisagreement(fieldName, winner.value, other.value);
+      // compareKey lets a field compare normalized identities ("gpt-5-6" vs "GPT-5.6")
+      const isDisagreement = this._isDisagreement(fieldName, winner.compareKey ?? winner.value, other.compareKey ?? other.value);
       if (isDisagreement) {
         conflicts.push({
           field: fieldName,
@@ -152,6 +158,16 @@ export class EvidenceMerger {
       allConflicts.push(...planResult.conflicts);
     }
 
+    // Fields where at least two independent, non-heuristic sources reported the same value.
+    // Only these may raise confidence as "agreement"; absence of a conflict alone is not agreement.
+    const agreements = [
+      ['model', input.modelCandidates], ['plan', input.planCandidates], ['turns', input.turnCandidates]
+    ].filter(([field, cands]) => {
+      const strong = (cands || []).filter(c => c && c.value !== null && c.value !== undefined && c.value !== '' &&
+        c.value !== 'unknown' && (SourcePriority[c.source] ?? 0) >= 2);
+      return new Set(strong.map(c => c.source)).size >= 2 && !allConflicts.some(k => k.field === field);
+    }).map(([field]) => field);
+
     const completeness = input.completeness || {};
     const networkHealth = input.networkHealth || {};
 
@@ -194,7 +210,8 @@ export class EvidenceMerger {
         contextWindow: {
           value: input.tokens.contextWindow ?? null,
           source: 'model_db',
-          evidenceType: input.tokens.contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+          // Looked up from a curated table, not reported by the provider, so never EXACT
+          evidenceType: input.tokens.contextWindow ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
         }
       } : null,
       limit: {
@@ -210,13 +227,15 @@ export class EvidenceMerger {
         evidenceType: EvidenceType.UNKNOWN
       },
       conflicts: allConflicts,
-      hasConflicts: allConflicts.length > 0
+      hasConflicts: allConflicts.length > 0,
+      agreements
     };
 
     return {
       evidence,
       conflicts: allConflicts,
-      hasConflicts: allConflicts.length > 0
+      hasConflicts: allConflicts.length > 0,
+      agreements
     };
   }
 

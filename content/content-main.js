@@ -216,7 +216,12 @@ export class ContentScriptCoordinator {
         }
         if (authResult.success && authResult.data) {
           normalized = this.conversationClient.normalizeConversation(authResult.data);
-          if (normalized.messages && normalized.messages.length > 0) {
+          // A payload for a different conversation (mis-keyed capture) must never be used here
+          if (normalized.conversationId && normalized.conversationId !== conversationId) {
+            apiError = 'Conversation data belonged to a different conversation; ignored';
+            normalized = null;
+          }
+          if (normalized && normalized.messages && normalized.messages.length > 0) {
             effectiveMessages = [...normalized.messages];
             authMessagesCount = normalized.messages.length;
             dataSource = 'authoritative';
@@ -260,9 +265,9 @@ export class ContentScriptCoordinator {
       const encoding = model?.encoding || 'o200k_base';
 
       // 6. Tokenize messages incrementally using model-aware BPE tokenizer with parts[] support
-      const tokenizedMessages = effectiveMessages.map(msg => {
+      const tokenize = (enc) => effectiveMessages.map(msg => {
         const parts = msg.parts || [{ type: 'text', text: msg.text }];
-        const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, encoding);
+        const partsResult = this.tokenizer.countMessagePartsTokens(msg.id, parts, enc);
         return {
           id: msg.id,
           role: msg.role,
@@ -272,6 +277,7 @@ export class ContentScriptCoordinator {
           isStreaming: Boolean(msg.isStreaming)
         };
       });
+      let tokenizedMessages = tokenize(encoding);
 
       // 7. Detect tools from both DOM and Network
       const domTools = this.toolDetector.detect(document);
@@ -294,6 +300,11 @@ export class ContentScriptCoordinator {
         list: combinedToolList
       };
 
+      // Turns the page can render (tool output and hidden context are not rendered as turns)
+      const apiVisibleTurns = normalized
+        ? normalized.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
+        : null;
+
       // 8. Reconcile Completeness & Virtualization (Group D)
       const renderedTurnCount = rawDomMessages.length;
       let authoritativeTurnCount = null;
@@ -303,7 +314,7 @@ export class ContentScriptCoordinator {
       let completenessSource = 'dom_complete';
 
       if (dataSource === 'authoritative' && authMessagesCount !== null) {
-        authoritativeTurnCount = authMessagesCount;
+        authoritativeTurnCount = apiVisibleTurns;
         completenessSource = 'authoritative_api';
         if (authoritativeTurnCount > renderedTurnCount) {
           domIsPartial = true;
@@ -339,105 +350,68 @@ export class ContentScriptCoordinator {
       // 9. Multi-Source Candidate Assembly & Evidence Reconciliation (Group E)
       const networkHealth = this.requestObserver.getHealth();
 
+      // MODEL precedence (highest first):
+      //   live_network     - model of THIS conversation's request/stream on this page (newest reply;
+      //                      observer resets on conversation switch, ignores prefetched conversations)
+      //   conversation_api - latest assistant model_slug on the active branch of the saved tree
+      //   dom              - latest data-message-model-slug, else model-like header text
+      // Candidates compare by a normalized key so "gpt-5-6" and "GPT-5.6 Instant" are not a conflict.
+      const modelKey = ModelDetector.modelKey;
       const modelCandidates = [];
-      if (normalized?.modelSlug) {
-        modelCandidates.push({
-          value: normalized.modelSlug,
-          source: 'conversation_api',
-          evidenceType: EvidenceType.EXACT
-        });
-      }
       if (netModel && netModel.value) {
-        modelCandidates.push({
-          value: netModel.value,
-          source: 'network',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        modelCandidates.push({ value: netModel.value, compareKey: modelKey(netModel.value), source: 'live_network', evidenceType: EvidenceType.OBSERVED });
+      }
+      if (normalized?.modelSlug) {
+        modelCandidates.push({ value: normalized.modelSlug, compareKey: modelKey(normalized.modelSlug), source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
       const domModel = this.modelDetector.detect(document);
       // Pass the raw slug (not the resolved family key) so the UI shows the real model name
       const domModelRaw = this.modelDetector.detectRawModelString(document);
       if (domModelRaw && domModel && domModel.id !== 'unknown') {
-        modelCandidates.push({
-          value: domModelRaw,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        modelCandidates.push({ value: domModelRaw, compareKey: modelKey(domModelRaw), source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
 
+      // TURNS: the page renders a subset (virtualized history, no tool turns). Fewer DOM turns is
+      // expected, not a contradiction; equal counts are agreement; MORE DOM turns than the API has
+      // means the API copy is stale, which is recorded as a conflict.
       const turnCandidates = [];
-      if (authMessagesCount !== null) {
-        turnCandidates.push({
-          value: authMessagesCount,
-          source: 'conversation_api',
-          evidenceType: EvidenceType.EXACT
-        });
+      if (apiVisibleTurns !== null) {
+        turnCandidates.push({ value: apiVisibleTurns, source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
-      if (rawDomMessages && rawDomMessages.length > 0) {
-        turnCandidates.push({
-          value: rawDomMessages.length,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+      if (rawDomMessages.length > 0 && (apiVisibleTurns === null || rawDomMessages.length >= apiVisibleTurns)) {
+        turnCandidates.push({ value: rawDomMessages.length, source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
 
+      // ATTACHMENTS: same subset rule as turns
       const attachmentCandidates = [];
       if (normalized?.attachments) {
-        attachmentCandidates.push({
-          value: normalized.attachments.count,
-          source: 'conversation_api',
-          evidenceType: EvidenceType.EXACT
-        });
+        attachmentCandidates.push({ value: normalized.attachments.count, source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
       const domAttachments = this.attachmentDetector.detect(document);
-      if (domAttachments) {
-        attachmentCandidates.push({
-          value: domAttachments.count,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+      if (domAttachments && (!normalized?.attachments || domAttachments.count >= normalized.attachments.count)) {
+        attachmentCandidates.push({ value: domAttachments.count, source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
 
-      const toolCandidates = [];
-      if (netTools.length > 0) {
-        toolCandidates.push({
-          value: netTools.map(t => t.name).join(','),
-          source: 'network',
-          evidenceType: EvidenceType.OBSERVED
-        });
-      }
-      if (domTools.list.length > 0) {
-        toolCandidates.push({
-          value: domTools.list.map(t => t.type).join(','),
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
-      }
+      // TOOLS: sources name tools differently ("web.run" vs "web_search") and each sees a subset;
+      // they are combined (union), not treated as competing claims
+      const toolCandidates = tools.list.length > 0
+        ? [{ value: tools.list.map(t => t.type).join(','), source: netTools.length > 0 ? 'network' : 'dom', evidenceType: EvidenceType.OBSERVED }]
+        : [];
 
-      // Plan candidates (Group F)
+      // PLAN precedence (account-level, never taken from a conversation):
+      //   session_api (/api/auth/session account.planType) > network (accounts/check account.plan_type)
+      //   > dom (explicit plan label) > dom_heuristic (upgrade prompt; never creates a conflict)
       const planCandidates = [];
       if (session?.planType) {
-        planCandidates.push({
-          value: normalizePlanTier(session.planType),
-          source: 'session_api',
-          evidenceType: EvidenceType.EXACT
-        });
+        planCandidates.push({ value: normalizePlanTier(session.planType), source: 'session_api', evidenceType: EvidenceType.EXACT });
       }
       const netPlan = this.requestObserver.getObservedPlan();
       if (netPlan && netPlan.value) {
-        planCandidates.push({
-          value: normalizePlanTier(netPlan.value),
-          source: 'network',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        planCandidates.push({ value: normalizePlanTier(netPlan.value), source: 'network', evidenceType: EvidenceType.OBSERVED });
       }
       const domPlan = this.planDetector.detect(document);
       if (domPlan && domPlan.value && domPlan.value !== PlanTier.UNKNOWN) {
-        planCandidates.push({
-          value: domPlan.value,
-          source: 'dom',
-          evidenceType: EvidenceType.OBSERVED
-        });
+        planCandidates.push({ value: domPlan.value, source: domPlan.source === 'dom_heuristic' ? 'dom_heuristic' : 'dom', evidenceType: domPlan.evidenceType || EvidenceType.OBSERVED });
       }
 
       const reconciled = EvidenceMerger.reconcileState({
@@ -451,9 +425,12 @@ export class ContentScriptCoordinator {
       });
 
       // Update model + plan-aware limits with winning evidence
-      const winningPlan = reconciled.evidence?.plan?.value || domPlan?.value || PlanTier.UNKNOWN;
-      const winningModelSlug = reconciled.evidence?.model?.value || domModelRaw || null;
+      const winningPlan = reconciled.evidence?.plan?.value || PlanTier.UNKNOWN;
+      const winningModelSlug = reconciled.evidence?.model?.value || null;
       model = this.modelDetector.resolveModel(winningModelSlug, winningPlan);
+      if (model.encoding && model.encoding !== encoding) {
+        tokenizedMessages = tokenize(model.encoding); // Count with the winning model's tokenizer
+      }
 
       // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
@@ -470,6 +447,7 @@ export class ContentScriptCoordinator {
         isPartial: !conversationComplete,
         evidence: reconciled.evidence,
         conflicts: reconciled.conflicts,
+        agreements: reconciled.agreements,
         networkHealth
       });
 
@@ -480,6 +458,11 @@ export class ContentScriptCoordinator {
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
       contextState.observables.network = networkHealth;
       contextState.observables.plan = winningPlan;
+      contextState.observables.hiddenMessagesExcluded = normalized?.hiddenMessages || 0;
+      // Measured tokens are a lower bound when turns may be missing (API unavailable for an existing
+      // conversation). Hidden system/memory context is never measured, so it is always excluded.
+      contextState.completeness.isLowerBound = !conversationComplete;
+      contextState.completeness.hiddenContextMeasured = false;
 
       // Structure-only snapshot for the "Copy diagnostics" button: no message text, no token
       contextState.diagnostics = {
