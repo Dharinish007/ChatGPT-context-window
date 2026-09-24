@@ -22,6 +22,7 @@ export const SOURCE_LABELS = Object.freeze({
   live_network: 'live network',
   conversation_api: 'conversation API',
   session_api: 'session API',
+  account_api: 'account API',
   network: 'network',
   dom: 'page (DOM)',
   dom_heuristic: 'page heuristic',
@@ -76,7 +77,8 @@ export class ConfidenceEngine {
       encoding = 'o200k_base',
       conflicts = [],
       agreements, // Fields confirmed by 2+ independent sources; undefined = legacy callers
-      evidence // Reconciled per-field evidence (value, source, evidenceType, confirmedBy); optional
+      evidence, // Reconciled per-field evidence (value, source, evidenceType, confirmedBy); optional
+      tokenizerExact = true // false when the provider's own tokenizer is not public (Claude, Gemini)
     } = params;
 
     // 1. Authoritative exact system metadata (100% confidence)
@@ -138,7 +140,12 @@ export class ConfidenceEngine {
     }
 
     // --- Factor B: Tokenization Reliability ---
-    factors.push({ type: 'positive', text: 'Exact tokenizer' });
+    if (tokenizerExact) {
+      factors.push({ type: 'positive', text: 'Exact tokenizer' });
+    } else {
+      score -= 0.10;
+      factors.push({ type: 'negative', text: "Approximate tokenizer: this provider's tokenizer is not public, so counts are estimates" });
+    }
 
     // --- Factor C: Network Interception ---
     if (isNetworkActive) {
@@ -234,6 +241,7 @@ export class ConfidenceEngine {
     // --- HIGH gate: every input of the displayed percentage must be backed by evidence ---
     // Only checks the caller actually supplied (legacy callers without plan context skip plan/limit).
     const highBlockers = [];
+    if (!tokenizerExact) highBlockers.push('approximate tokenizer');
     if (conflicts && conflicts.length > 0) highBlockers.push('sources disagree');
     if (!isModelKnown) highBlockers.push('model unknown');
     if (planTier !== undefined) {

@@ -164,7 +164,8 @@ export class ContextCalculator {
       encoding: model.encoding || 'o200k_base',
       conflicts: input.conflicts || [],
       agreements: input.agreements,
-      evidence: input.evidence
+      evidence: input.evidence,
+      tokenizerExact: input.tokenizerExact !== false
     });
 
     const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);

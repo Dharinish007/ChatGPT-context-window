@@ -1522,6 +1522,7 @@ const SourcePriority = Object.freeze({
   live_network: 5,
   conversation_api: 4,
   session_api: 4,
+  account_api: 4, // Provider account endpoint (e.g. claude.ai organization capabilities)
   authoritative_api: 4,
   authoritative: 4,
   network: 3,
@@ -1786,6 +1787,7 @@ const SOURCE_LABELS = Object.freeze({
   live_network: 'live network',
   conversation_api: 'conversation API',
   session_api: 'session API',
+  account_api: 'account API',
   network: 'network',
   dom: 'page (DOM)',
   dom_heuristic: 'page heuristic',
@@ -1840,7 +1842,8 @@ class ConfidenceEngine {
       encoding = 'o200k_base',
       conflicts = [],
       agreements, // Fields confirmed by 2+ independent sources; undefined = legacy callers
-      evidence // Reconciled per-field evidence (value, source, evidenceType, confirmedBy); optional
+      evidence, // Reconciled per-field evidence (value, source, evidenceType, confirmedBy); optional
+      tokenizerExact = true // false when the provider's own tokenizer is not public (Claude, Gemini)
     } = params;
 
     // 1. Authoritative exact system metadata (100% confidence)
@@ -1902,7 +1905,12 @@ class ConfidenceEngine {
     }
 
     // --- Factor B: Tokenization Reliability ---
-    factors.push({ type: 'positive', text: 'Exact tokenizer' });
+    if (tokenizerExact) {
+      factors.push({ type: 'positive', text: 'Exact tokenizer' });
+    } else {
+      score -= 0.10;
+      factors.push({ type: 'negative', text: "Approximate tokenizer: this provider's tokenizer is not public, so counts are estimates" });
+    }
 
     // --- Factor C: Network Interception ---
     if (isNetworkActive) {
@@ -1998,6 +2006,7 @@ class ConfidenceEngine {
     // --- HIGH gate: every input of the displayed percentage must be backed by evidence ---
     // Only checks the caller actually supplied (legacy callers without plan context skip plan/limit).
     const highBlockers = [];
+    if (!tokenizerExact) highBlockers.push('approximate tokenizer');
     if (conflicts && conflicts.length > 0) highBlockers.push('sources disagree');
     if (!isModelKnown) highBlockers.push('model unknown');
     if (planTier !== undefined) {
@@ -2223,7 +2232,8 @@ class ContextCalculator {
       encoding: model.encoding || 'o200k_base',
       conflicts: input.conflicts || [],
       agreements: input.agreements,
-      evidence: input.evidence
+      evidence: input.evidence,
+      tokenizerExact: input.tokenizerExact !== false
     });
 
     const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);
@@ -5197,6 +5207,8 @@ class ChatGPTDOMObserver {
   constructor(options = {}) {
     this.onChange = options.onChange || (() => {});
     this.debounceMs = options.debounceMs || 120;
+    // The chat input of the site (typing there never changes the conversation's context)
+    this.composerSelector = options.composerSelector || '#prompt-textarea';
     // Upper bound on how long a burst of mutations can postpone an update. Without it, a page that
     // never stops mutating (initial render, animations) kept pushing the trailing debounce back.
     this.maxWaitMs = options.maxWaitMs || 400;
@@ -5296,7 +5308,8 @@ class ChatGPTDOMObserver {
     if (!node || !node.closest) return true;
     if (node.closest('#chatgpt-context-monitor-host, nav')) return false;
     if (!this._composer || !this._composer.isConnected) {
-      this._composer = document.querySelector('#prompt-textarea')?.closest('form') || null;
+      const input = document.querySelector(this.composerSelector);
+      this._composer = input ? (input.closest('form, fieldset') || input) : null;
     }
     if (this._composer && this._composer.contains(node)) {
       return Boolean(node.closest("[data-testid*='model-switcher'], [data-testid*='model-selector']"));
@@ -6316,11 +6329,610 @@ class ContentScriptCoordinator {
 }
 
 
-  // Auto-initialize when loaded on ChatGPT Web. Injected at document_start: the network reads start
-  // now, in parallel with the page's own loading; the widget and DOM observer wait for the DOM.
+  // --- Provider adapters (Claude, Gemini) ---
+  /**
+ * Context Monitor - Provider adapters for Claude (claude.ai) and Gemini (gemini.google.com)
+ *
+ * Each adapter only knows its site: how to find the conversation id, read turns from the page,
+ * read the model and plan, and which context window applies. Everything else (tokenizer, evidence,
+ * confidence, widget) is the shared engine in provider-coordinator.js.
+ *
+ * Context windows come only from the providers' own published pages; anything not published stays
+ * UNKNOWN. Neither provider publishes the tokenizer its chat app uses, so counts are ESTIMATED with
+ * the o200k BPE tokenizer and confidence can never be HIGH for these sites.
+ */
+
+// element -> { raw, text }: cleaning clones the node, so unchanged elements reuse the last result
+const textCache = new WeakMap();
+
+/**
+ * Visible text of a message element without UI chrome (buttons, screen-reader labels, thinking).
+ * @param {Element} el
+ * @param {string} removeSelector
+ * @returns {string}
+ */
+function cleanText(el, removeSelector) {
+  if (!el) return '';
+  const count = typeof el.getElementsByTagName === 'function' ? el.getElementsByTagName('*').length : -1;
+  const raw = `${count}|${el.textContent || ''}`;
+  const hit = textCache.get(el);
+  if (hit && hit.raw === raw) return hit.text;
+  let text;
+  if (typeof el.cloneNode === 'function') {
+    const clone = el.cloneNode(true);
+    if (removeSelector && clone.querySelectorAll) clone.querySelectorAll(removeSelector).forEach(n => n.remove());
+    text = (clone.innerText || clone.textContent || '').trim();
+  } else {
+    text = (el.innerText || el.textContent || '').trim();
+  }
+  textCache.set(el, { raw, text });
+  return text;
+}
+
+/** Keeps only matches that are not inside another match (a turn wrapper can contain the message). */
+function topLevel(nodes) {
+  const set = new Set(nodes);
+  return nodes.filter(n => {
+    for (let p = n.parentElement; p; p = p.parentElement) if (set.has(p)) return false;
+    return true;
+  });
+}
+
+// ============================================================================ Claude
+
+// support.claude.com/en/articles/8606394 (checked 2026-09-24): chatting on paid plans (Pro, Max,
+// Team, Enterprise) is 200K, except these models at 1M. The Free plan is not published.
+const CLAUDE_LIMIT_SOURCE = 'Claude Help Center: context window on paid plans (support.claude.com/en/articles/8606394)';
+const CLAUDE_1M_MODELS = new Set(['fable-5.1', 'opus-5.5', 'sonnet-5']);
+const CLAUDE_PAID_PLANS = new Set(['pro', 'max', 'team', 'enterprise']);
+
+/**
+ * "claude-opus-5-5", "Opus 5.5", "claude-sonnet-4-5-20250929", "claude-3-5-sonnet-20241022" -> "opus-5.5",
+ * "opus-5.5", "sonnet-4.5", "sonnet-3.5". null when no Claude family/version is present.
+ * @param {string} value
+ * @returns {string|null}
+ */
+function claudeModelKey(value) {
+  const s = String(value || '').toLowerCase();
+  // Versions are 1-2 digits, so a date suffix ("sonnet-20241022") is never read as a version
+  let m = s.match(/\b(opus|sonnet|haiku|fable)[\s-]*(\d{1,2})(?:[.-](\d{1,2}))?(?!\d)/);
+  if (!m) {
+    const old = s.match(/claude-(\d+)(?:-(\d{1,2}))?-(opus|sonnet|haiku)/);
+    if (!old) return null;
+    m = [null, old[3], old[1], old[2]];
+  }
+  const minor = m[3] && m[3] !== '0' ? `.${m[3]}` : '';
+  return `${m[1]}-${m[2]}${minor}`;
+}
+
+const ClaudeProvider = {
+  name: 'Claude',
+  hosts: ['claude.ai'],
+  inputSelector: 'div.ProseMirror[contenteditable="true"], [data-testid="chat-input"], fieldset [contenteditable="true"]',
+  hasApi: true,
+
+  conversationId(url) {
+    const m = String(url || '').match(/\/chat\/([0-9a-f-]{36})/i);
+    return m ? m[1] : null;
+  },
+
+  findInput(doc) {
+    return doc.querySelector(this.inputSelector);
+  },
+
+  extractMessages(doc) {
+    const nodes = topLevel(Array.from(doc.querySelectorAll('[data-testid="user-message"], .font-claude-response, .font-claude-message')));
+    return nodes.map((el, i) => {
+      const role = el.matches && el.matches('[data-testid="user-message"]') ? 'user' : 'assistant';
+      const text = cleanText(el, 'button, .sr-only, [aria-hidden="true"]');
+      return { id: `claude-dom-${i}-${role}`, role, text, parts: [{ type: 'text', text }], isStreaming: Boolean(el.closest && el.closest('[data-is-streaming="true"]')) };
+    }).filter(m => m.text);
+  },
+
+  detectModel(doc) {
+    const el = doc.querySelector('[data-testid="model-selector-dropdown"]');
+    const text = el ? (el.textContent || '').trim() : '';
+    return text && claudeModelKey(text) ? text : null;
+  },
+
+  detectPlan(doc) {
+    const el = doc.querySelector('[data-testid="user-menu-button"]');
+    const m = el ? (el.textContent || '').match(/\b(Free|Pro|Max|Team|Enterprise)\s+plan\b/i) : null;
+    return m ? { value: m[1].toLowerCase(), source: 'dom', evidenceType: 'OBSERVED' } : null;
+  },
+
+  modelKey: claudeModelKey,
+
+  displayName(raw) {
+    const key = claudeModelKey(raw);
+    if (!key) return raw || null;
+    const [family, version] = key.split('-');
+    return `Claude ${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`;
+  },
+
+  /**
+   * @returns {{ contextWindow: number|null, status: string, source: string, recognized: boolean }}
+   */
+  resolveLimit(rawModel, plan) {
+    const key = claudeModelKey(rawModel);
+    if (!key) return { contextWindow: null, status: 'UNKNOWN', source: 'Model not recognized', recognized: false };
+    if (!plan || plan === 'unknown') return { contextWindow: null, status: 'UNKNOWN', source: 'Plan unknown', recognized: true };
+    if (!CLAUDE_PAID_PLANS.has(plan)) return { contextWindow: null, status: 'UNKNOWN', source: `No published context window for the ${plan} plan`, recognized: true };
+    return { contextWindow: CLAUDE_1M_MODELS.has(key) ? 1000000 : 200000, status: 'VERIFIED', source: CLAUDE_LIMIT_SOURCE, recognized: true };
+  },
+
+  /** Organization id: the lastActiveOrg cookie, else the first organization of the account. */
+  async _orgId(fetchJson) {
+    const m = (typeof document !== 'undefined' ? document.cookie : '').match(/(?:^|;\s*)lastActiveOrg=([^;]+)/);
+    if (m) return decodeURIComponent(m[1]);
+    const orgs = await fetchJson('/api/organizations');
+    return Array.isArray(orgs) && orgs[0]?.uuid ? orgs[0].uuid : null;
+  },
+
+  /**
+   * Reads the saved conversation (claude.ai's own same-origin API, cookie-authenticated) and the
+   * account plan. Returns null when unavailable; the page is then read instead.
+   */
+  async fetchConversation(conversationId, fetchJson) {
+    const org = await this._orgId(fetchJson);
+    if (!org) return null;
+    const [conv, orgInfo] = await Promise.all([
+      fetchJson(`/api/organizations/${org}/chat_conversations/${conversationId}?tree=True&rendering_mode=messages&render_all_tools=true`),
+      fetchJson(`/api/organizations/${org}`).catch(() => null)
+    ]);
+    return { ...this.normalizeConversation(conv), plan: this.planFromOrganization(orgInfo) };
+  },
+
+  /** capabilities: claude_max / claude_pro / raven (Team or Enterprise); only "chat" -> free (inferred). */
+  planFromOrganization(org) {
+    const caps = Array.isArray(org?.capabilities) ? org.capabilities : null;
+    if (!caps) return null;
+    if (caps.includes('claude_max')) return { value: 'max', evidenceType: 'OBSERVED' };
+    if (caps.includes('claude_pro')) return { value: 'pro', evidenceType: 'OBSERVED' };
+    if (caps.includes('raven')) return { value: org.raven_type === 'enterprise' ? 'enterprise' : 'team', evidenceType: 'OBSERVED' };
+    return { value: 'free', evidenceType: 'ESTIMATED' }; // No paid capability listed
+  },
+
+  /**
+   * Active branch (current_leaf_message_uuid -> parents) of a claude.ai conversation, as turns.
+   * Tool calls and results are counted as "tool"; earlier thinking is not resent, so it is skipped;
+   * text extracted from attached files is part of the prompt and counted with the user turn.
+   */
+  normalizeConversation(conv) {
+    const all = Array.isArray(conv?.chat_messages) ? conv.chat_messages : [];
+    const byId = new Map(all.map(m => [m.uuid, m]));
+    let chain = [];
+    if (conv?.current_leaf_message_uuid && byId.has(conv.current_leaf_message_uuid)) {
+      const seen = new Set();
+      for (let m = byId.get(conv.current_leaf_message_uuid); m && !seen.has(m.uuid); m = byId.get(m.parent_message_uuid)) {
+        seen.add(m.uuid);
+        chain.unshift(m);
+      }
+    } else {
+      chain = [...all].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    }
+
+    const messages = [];
+    let files = 0;
+    let unknownFiles = 0;
+    for (const m of chain) {
+      const role = m.sender === 'human' ? 'user' : 'assistant';
+      const text = [];
+      const tool = [];
+      if (Array.isArray(m.content) && m.content.length > 0) {
+        for (const block of m.content) {
+          if (block.type === 'text' && block.text) text.push(block.text);
+          else if (block.type === 'tool_use') tool.push(JSON.stringify(block.input ?? {}));
+          else if (block.type === 'tool_result') {
+            const c = Array.isArray(block.content) ? block.content.map(x => x.text || '').join('\n') : String(block.content ?? '');
+            if (c) tool.push(c);
+          }
+        }
+      } else if (m.text) {
+        text.push(m.text);
+      }
+      for (const a of m.attachments || []) {
+        files++;
+        if (a.extracted_content) text.push(a.extracted_content);
+        else unknownFiles++;
+      }
+      for (const f of [...(m.files || []), ...(m.files_v2 || [])]) {
+        files++;
+        unknownFiles++;
+      }
+      if (text.length) messages.push({ id: m.uuid, role, text: text.join('\n\n'), parts: [{ type: 'text', text: text.join('\n\n') }], isStreaming: false });
+      if (tool.length) messages.push({ id: `${m.uuid}-tool`, role: 'tool', text: tool.join('\n\n'), parts: [{ type: 'text', text: tool.join('\n\n') }], isStreaming: false });
+    }
+    return {
+      conversationId: conv?.uuid || null,
+      model: conv?.model || null,
+      messages,
+      visibleTurns: chain.length,
+      attachments: { count: files, estimatedTokens: 0, hasUnknown: unknownFiles > 0 }
+    };
+  }
+};
+
+// ============================================================================ Gemini
+
+// support.google.com/gemini/answer/16275805 (checked 2026-09-24): the context window depends on the
+// plan, not the model: no AI plan 32K, Google AI Plus 128K, Google AI Pro and Ultra 1M.
+const GEMINI_LIMIT_SOURCE = 'Gemini Apps Help: limits by plan (support.google.com/gemini/answer/16275805)';
+const GEMINI_LIMITS = { free: 32000, plus: 128000, pro: 1000000, ultra: 1000000 };
+
+const GeminiProvider = {
+  name: 'Gemini',
+  hosts: ['gemini.google.com'],
+  inputSelector: 'rich-textarea [contenteditable="true"], .ql-editor[contenteditable="true"]',
+  hasApi: false,
+  // Gemini loads older turns as you scroll up, so a saved chat read from the page may be incomplete
+  pageMayBePartial: true,
+
+  conversationId(url) {
+    const m = String(url || '').match(/\/app\/([0-9a-f]{8,})/i) || String(url || '').match(/\/gem\/[^/]+\/([0-9a-f]{8,})/i);
+    return m ? m[1] : null;
+  },
+
+  findInput(doc) {
+    return doc.querySelector(this.inputSelector);
+  },
+
+  extractMessages(doc) {
+    const nodes = Array.from(doc.querySelectorAll('user-query, model-response'));
+    return nodes.map((el, i) => {
+      const role = String(el.tagName).toLowerCase() === 'user-query' ? 'user' : 'assistant';
+      const content = role === 'user'
+        ? (el.querySelector('.query-text') || el)
+        : (el.querySelector('message-content') || el.querySelector('.model-response-text') || el);
+      const text = cleanText(content, 'button, .cdk-visually-hidden, .screen-reader-only, model-thoughts, mat-icon');
+      return { id: `gemini-dom-${i}-${role}`, role, text, parts: [{ type: 'text', text }], isStreaming: false };
+    }).filter(m => m.text);
+  },
+
+  detectModel(doc) {
+    const el = doc.querySelector('[data-test-id="bard-mode-menu-button"], [data-test-id*="mode-menu"] button, button.gds-mode-switch-button');
+    const text = el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    return text && text.length < 40 ? text : null;
+  },
+
+  /** Explicit "Google AI Pro/Ultra/Plus" text is OBSERVED; a bare PRO/ULTRA badge is only a hint. */
+  detectPlan(doc) {
+    for (const el of doc.querySelectorAll('header, top-bar-actions, [data-test-id*="pillbox"], .gds-pillbox, [role="banner"]')) {
+      const text = el.textContent || '';
+      const named = text.match(/Google AI (Ultra|Pro|Plus)\b/);
+      if (named) return { value: named[1].toLowerCase(), source: 'dom', evidenceType: 'OBSERVED' };
+      const badge = text.match(/\b(ULTRA|PRO|PLUS)\b/);
+      if (badge) return { value: badge[1].toLowerCase(), source: 'dom_heuristic', evidenceType: 'ESTIMATED' };
+    }
+    return null;
+  },
+
+  modelKey: (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim() || null,
+
+  displayName(raw) {
+    return raw ? (/gemini/i.test(raw) ? raw : `Gemini · ${raw}`) : null;
+  },
+
+  resolveLimit(rawModel, plan) {
+    if (!plan || plan === 'unknown' || !(plan in GEMINI_LIMITS)) {
+      return { contextWindow: null, status: 'UNKNOWN', source: 'Plan unknown', recognized: Boolean(rawModel) };
+    }
+    // Google publishes the window per plan for every model, so the model is not needed for the limit
+    return { contextWindow: GEMINI_LIMITS[plan], status: 'VERIFIED', source: GEMINI_LIMIT_SOURCE, recognized: true };
+  }
+};
+
+const PROVIDERS = [ClaudeProvider, GeminiProvider];
+
+/** Adapter for a hostname, or null (ChatGPT uses its own coordinator). */
+function providerForHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return PROVIDERS.find(p => p.hosts.some(h => host === h || host.endsWith(`.${h}`))) || null;
+}
+
+
+  /**
+ * Context Monitor - Coordinator for provider adapters (Claude, Gemini)
+ *
+ * Same pipeline and widget as ChatGPT, fed by a provider adapter (content/providers.js):
+ *   saved conversation (adapter API, when it has one) or the page  ->  live page turns merged in
+ *   ->  model / plan evidence reconciled  ->  published context window  ->  tokens (ESTIMATED)
+ *   ->  confidence + context intelligence  ->  widget + toolbar badge
+ * ChatGPT keeps its own coordinator (content-main.js); nothing here runs on ChatGPT.
+ */
+
+
+
+
+
+
+
+
+
+
+const API_TTL_MS = 60000; // Saved copy stays fresh for a minute; a reply finishing re-reads it at once
+const API_BACKOFF_MS = 15000; // After a failed read, wait before trying again (Refresh skips this)
+
+class ProviderCoordinator {
+  /** @param {Object} provider Adapter from content/providers.js */
+  constructor(provider) {
+    this.provider = provider;
+    this.tokenizer = new Tokenizer();
+    this.overlayUI = new ContextWidget({
+      provider: provider.name,
+      findInput: () => provider.findInput(document),
+      onRefresh: () => this.refresh(),
+      getDiagnostics: () => this.getDiagnostics()
+    });
+    this.domObserver = null;
+    this.latestState = null;
+    this.activeConversationId = null;
+    this._runSeq = 0;
+    this._api = null; // { conversationId, result, at } last successful saved-conversation read
+    this._apiFailure = null; // { conversationId, error, at }
+    this._apiInFlight = null;
+    this._wasStreaming = false;
+    this._sessionStartTokens = new Map();
+  }
+
+  init() {
+    this.overlayUI.mount();
+    this.domObserver = new ChatGPTDOMObserver({
+      onChange: (event) => this.handleDOMChange(event),
+      composerSelector: this.provider.inputSelector
+    });
+    this.domObserver.start();
+    this.tokenizer.getEncoder(); // Build the BPE tables while the first read is in flight
+    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request?.type !== 'TOGGLE_OVERLAY') return false;
+        this.overlayUI.isVisible = !this.overlayUI.isVisible;
+        this.overlayUI.render();
+        sendResponse({ success: true, isVisible: this.overlayUI.isVisible });
+        return true;
+      });
+    }
+  }
+
+  /** Same-origin JSON GET with the page's cookies; throws on HTTP errors. */
+  async _fetchJson(path) {
+    const res = await fetch(path, { credentials: 'include', headers: { Accept: 'application/json' } });
+    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    return res.json();
+  }
+
+  /**
+   * Saved conversation through the adapter's API: cached per conversation, one read at a time,
+   * backed off after a failure. Returns { result, error, fromCache }.
+   */
+  async _readApi(conversationId, force = false) {
+    if (!this.provider.hasApi || !conversationId) return { result: null, error: null };
+    const fresh = this._api && this._api.conversationId === conversationId && Date.now() - this._api.at < API_TTL_MS;
+    if (!force && fresh) return { result: this._api.result, error: null, fromCache: true };
+    const failed = this._apiFailure && this._apiFailure.conversationId === conversationId && Date.now() - this._apiFailure.at < API_BACKOFF_MS;
+    if (!force && failed) return { result: this._keptCopy(conversationId), error: this._apiFailure.error };
+    if (!force && this._apiInFlight?.conversationId === conversationId) return this._apiInFlight.promise;
+
+    const promise = (async () => {
+      try {
+        const result = await this.provider.fetchConversation(conversationId, (p) => this._fetchJson(p));
+        if (!result) throw new Error('Conversation API unavailable');
+        this._api = { conversationId, result, at: Date.now() };
+        this._apiFailure = null;
+        return { result, error: null };
+      } catch (err) {
+        this._apiFailure = { conversationId, error: err.message || 'Conversation API failed', at: Date.now() };
+        return { result: this._keptCopy(conversationId), error: this._apiFailure.error };
+      } finally {
+        if (this._apiInFlight?.promise === promise) this._apiInFlight = null;
+      }
+    })();
+    this._apiInFlight = { conversationId, promise };
+    return promise;
+  }
+
+  /** Last good copy of this conversation (used when a later read fails). */
+  _keptCopy(conversationId) {
+    return this._api && this._api.conversationId === conversationId ? this._api.result : null;
+  }
+
+  async refresh() {
+    await this.handleDOMChange({ isRefresh: true, forceApi: true });
+  }
+
+  _conversationRef(id) {
+    return id ? this.tokenizer.hashString(id).toString(16) : null;
+  }
+
+  getDiagnostics() {
+    const currentRef = this._conversationRef(this.provider.conversationId(location.href));
+    const copiedAt = new Date().toISOString();
+    const d = this.latestState?.diagnostics;
+    if (!d) return { note: 'Nothing read yet in this tab', provider: this.provider.name, currentConversationRef: currentRef, copiedAt };
+    if (d.conversation.ref !== currentRef) {
+      return { note: 'The conversation on screen is still loading; data from the previous conversation is withheld', provider: this.provider.name, currentConversationRef: currentRef, loading: true, copiedAt };
+    }
+    return { ...d, copiedAt, stateAgeMs: Date.now() - this.latestState.timestamp };
+  }
+
+  async handleDOMChange(event = {}) {
+    const runSeq = ++this._runSeq;
+    const p = this.provider;
+    try {
+      const conversationId = p.conversationId(location.href);
+      if (conversationId !== this.activeConversationId) {
+        // Another saved conversation: show loading, never the previous one's numbers
+        if (conversationId) this.overlayUI.update(toWidgetState(null, { provider: p.name }));
+        this.activeConversationId = conversationId;
+        this._wasStreaming = false;
+      }
+
+      // Page (one read per pass)
+      const dom = p.extractMessages(document);
+      const domModelRaw = p.detectModel(document);
+      const domPlan = p.detectPlan(document);
+      const streaming = dom.some(m => m.isStreaming);
+      // A reply just finished: the saved copy is now behind, read it again
+      const forceApi = Boolean(event.forceApi) || (this._wasStreaming && !streaming);
+      this._wasStreaming = streaming;
+
+      // Saved conversation (Claude API) when available
+      const api = await this._readApi(conversationId, forceApi);
+      if (runSeq !== this._runSeq) return;
+      const saved = api.result && (!api.result.conversationId || api.result.conversationId === conversationId) ? api.result : null;
+
+      let messages;
+      let dataSource;
+      let completenessSource;
+      if (saved && saved.messages.length > 0) {
+        dataSource = 'authoritative';
+        completenessSource = 'authoritative_api';
+        // Turns on the page beyond the saved ones are live (just sent / still streaming)
+        const savedVisible = saved.messages.filter(m => m.role !== 'tool').length;
+        messages = mergeLiveTurns(saved.messages, dom.length > savedVisible ? dom.slice(savedVisible) : [], { conversationId, baseIsFinal: true });
+      } else {
+        dataSource = conversationId && p.hasApi ? 'dom_fallback' : 'dom';
+        messages = dom;
+        // A saved chat read only from the page may miss turns (API failed, or lazy-loaded history)
+        completenessSource = conversationId && (p.hasApi || p.pageMayBePartial) ? 'dom_partial' : 'dom_complete';
+      }
+      const complete = completenessSource !== 'dom_partial';
+      const awaitingData = Boolean(conversationId) && messages.length === 0;
+
+      // Model and plan evidence
+      const modelCandidates = [];
+      if (saved?.model) modelCandidates.push({ value: saved.model, compareKey: p.modelKey(saved.model), source: 'conversation_api', evidenceType: EvidenceType.EXACT });
+      if (domModelRaw) modelCandidates.push({ value: domModelRaw, compareKey: p.modelKey(domModelRaw), source: 'dom', evidenceType: EvidenceType.OBSERVED });
+      const planCandidates = [];
+      if (saved?.plan) planCandidates.push({ value: saved.plan.value, source: 'account_api', evidenceType: saved.plan.evidenceType });
+      if (domPlan) planCandidates.push(domPlan);
+      const turnCandidates = [];
+      if (saved) turnCandidates.push({ value: saved.visibleTurns, source: 'conversation_api', evidenceType: EvidenceType.EXACT });
+      if (dom.length && (!saved || dom.length >= saved.visibleTurns)) turnCandidates.push({ value: dom.length, source: 'dom', evidenceType: EvidenceType.OBSERVED });
+
+      const completeness = {
+        conversationComplete: complete,
+        domIsPartial: !complete,
+        renderedTurnCount: dom.length,
+        authoritativeTurnCount: saved ? saved.visibleTurns : null,
+        virtualizationGap: 0,
+        completenessSource
+      };
+      const reconciled = EvidenceMerger.reconcileState({ modelCandidates, planCandidates, turnCandidates, completeness, networkHealth: { networkAvailable: false } });
+      const ev = reconciled.evidence;
+      const modelRaw = ev.model?.value || null;
+      const plan = ev.plan?.value || 'unknown';
+      const limit = p.resolveLimit(modelRaw, plan);
+
+      // Tokens: o200k BPE as an estimate (the provider's tokenizer is not public)
+      const tokenized = messages.map(m => {
+        const r = this.tokenizer.countMessagePartsTokens(m.id, m.parts || [{ type: 'text', text: m.text }], 'o200k_base');
+        return { id: m.id, role: m.role, tokens: r.tokens, hasNonTextParts: r.hasNonTextParts, nonTextParts: r.nonTextParts, isStreaming: Boolean(m.isStreaming) };
+      });
+      const attachments = saved?.attachments || { count: 0, estimatedTokens: 0, hasUnknown: false };
+
+      const state = ContextCalculator.calculate({
+        messages: tokenized,
+        model: {
+          // The window may be known from the plan alone (Gemini), so the id is the provider's app
+          id: limit.recognized || limit.contextWindow ? (p.modelKey(modelRaw) || `${p.name.toLowerCase()}-app`) : 'unknown',
+          displayName: p.displayName(modelRaw) || `${p.name} (model not detected)`,
+          contextWindow: limit.contextWindow,
+          limitStatus: limit.status,
+          limitSource: limit.source,
+          recognized: limit.recognized,
+          encoding: 'o200k_base'
+        },
+        plan: ev.plan,
+        attachments,
+        tools: { observed: tokenized.some(m => m.role === 'tool'), list: [] },
+        completeness,
+        isPartial: !complete,
+        evidence: ev,
+        conflicts: reconciled.conflicts,
+        agreements: reconciled.agreements,
+        networkHealth: { networkAvailable: false },
+        tokenizerExact: false
+      });
+
+      state.observables.dataSource = dataSource;
+      state.observables.conversationId = conversationId;
+      state.observables.awaitingData = awaitingData;
+      if (api.error) state.observables.apiError = saved ? `Conversation API failed (${api.error}); using the last good copy` : `Conversation API failed (${api.error}); reading the page`;
+      state.completeness.isLowerBound = !complete;
+      state.completeness.hiddenContextMeasured = false;
+      const windowKnown = Boolean(state.model.contextWindow);
+      ev.limit = {
+        value: state.model.contextWindow,
+        status: windowKnown ? state.model.limitStatus : 'UNKNOWN',
+        source: windowKnown ? 'model_db' : 'unknown',
+        reference: windowKnown ? limit.source : null,
+        evidenceType: windowKnown ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+      };
+      ev.tokens = { total: { value: state.tokens.totalMeasurable, source: 'tokenizer', evidenceType: EvidenceType.ESTIMATED, approximate: true } };
+
+      if (!awaitingData && conversationId && !this._sessionStartTokens.has(conversationId)) this._sessionStartTokens.set(conversationId, state.tokens.totalMeasurable);
+      state.intelligence = analyzeContext({
+        percentage: state.utilization.percentage,
+        usedTokens: state.tokens.totalMeasurable,
+        contextLimit: state.model.contextWindow,
+        remainingTokens: state.tokens.remaining,
+        messages: tokenized,
+        attachments,
+        isLowerBound: !complete,
+        sessionStartTokens: conversationId ? (this._sessionStartTokens.get(conversationId) ?? null) : null
+      });
+
+      // Structure only: no message text, no raw conversation id
+      state.diagnostics = {
+        provider: p.name,
+        generatedAt: new Date().toISOString(),
+        conversation: {
+          ref: this._conversationRef(conversationId), loading: awaitingData, dataSource, apiError: api.error || null,
+          turns: { api: saved ? saved.visibleTurns : null, page: dom.length, counted: messages.length }, completeness: { source: completenessSource, lowerBound: !complete }
+        },
+        candidates: { model: modelCandidates.map(c => `${c.source}:${c.value}`), plan: planCandidates.map(c => `${c.source}:${c.value}`) },
+        conflicts: reconciled.conflicts.map(c => ({ field: c.field, winning: `${c.winning.source}:${c.winning.value}`, discarded: `${c.discarded.source}:${c.discarded.value}` })),
+        agreements: reconciled.agreements,
+        resolved: { model: modelRaw, plan, limit: state.model.contextWindow, limitStatus: ev.limit.status, limitReference: ev.limit.reference },
+        tokens: { used: state.tokens.totalMeasurable, remaining: state.tokens.remaining, percentage: state.utilization.percentage, tokenizer: 'o200k_base (approximate for this provider)' },
+        confidence: { level: state.confidence.level, percentage: state.confidence.percentage, highBlockers: state.confidence.highBlockers || [] },
+        intelligence: { health: state.intelligence.health.level, advice: state.intelligence.advice.title }
+      };
+      state.evidence = ev;
+      state.conflicts = reconciled.conflicts;
+
+      this.latestState = state;
+      this.overlayUI.update(toWidgetState(state, { provider: p.name }));
+      this.syncState(state);
+    } catch (err) {
+      console.error(`[Context Monitor] ${p.name} extraction error:`, err);
+    }
+  }
+
+  /** Toolbar badge; at most one message per 250 ms (streaming updates the page many times a second). */
+  syncState(state) {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
+    this._pendingSync = state;
+    if (this._syncTimer) return;
+    const send = () => {
+      if (!this._pendingSync) return;
+      chrome.runtime.sendMessage({ type: 'CONTEXT_UPDATED', payload: this._pendingSync }).catch(() => {});
+      this._pendingSync = null;
+    };
+    send();
+    this._syncTimer = setTimeout(() => { this._syncTimer = null; send(); }, 250);
+  }
+}
+
+
+  // Auto-initialize. Claude / Gemini use their adapter; everything else is ChatGPT, where the network
+  // reads start now (document_start), in parallel with the page's own loading. The widget and DOM
+  // observer wait for the DOM.
   try {
-    const coordinator = new ContentScriptCoordinator(MODEL_LIMITS_DB);
-    coordinator.prefetch();
+    const provider = providerForHost(location.hostname);
+    const coordinator = provider ? new ProviderCoordinator(provider) : new ContentScriptCoordinator(MODEL_LIMITS_DB);
+    if (!provider) coordinator.prefetch();
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => coordinator.init());
     } else {

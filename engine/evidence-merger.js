@@ -20,6 +20,7 @@ export const SourcePriority = Object.freeze({
   live_network: 5,
   conversation_api: 4,
   session_api: 4,
+  account_api: 4, // Provider account endpoint (e.g. claude.ai organization capabilities)
   authoritative_api: 4,
   authoritative: 4,
   network: 3,

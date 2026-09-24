@@ -76,6 +76,8 @@ const domObserverCode = readCleanModule(path.join(rootDir, 'content', 'chatgpt-d
 const requestObserverCode = readCleanModule(path.join(rootDir, 'network', 'request-observer.js'));
 const turnMergerCode = readCleanModule(path.join(rootDir, 'content', 'turn-merger.js'));
 const contentMainCode = readCleanModule(path.join(rootDir, 'content', 'content-main.js'));
+const providersCode = readCleanModule(path.join(rootDir, 'content', 'providers.js'));
+const providerCoordinatorCode = readCleanModule(path.join(rootDir, 'content', 'provider-coordinator.js'));
 
 const bundledContentScript = `/**
  * ChatGPT Context Monitor - Production Content Script
@@ -135,11 +137,18 @@ const bundledContentScript = `/**
 
   ${contentMainCode}
 
-  // Auto-initialize when loaded on ChatGPT Web. Injected at document_start: the network reads start
-  // now, in parallel with the page's own loading; the widget and DOM observer wait for the DOM.
+  // --- Provider adapters (Claude, Gemini) ---
+  ${providersCode}
+
+  ${providerCoordinatorCode}
+
+  // Auto-initialize. Claude / Gemini use their adapter; everything else is ChatGPT, where the network
+  // reads start now (document_start), in parallel with the page's own loading. The widget and DOM
+  // observer wait for the DOM.
   try {
-    const coordinator = new ContentScriptCoordinator(MODEL_LIMITS_DB);
-    coordinator.prefetch();
+    const provider = providerForHost(location.hostname);
+    const coordinator = provider ? new ProviderCoordinator(provider) : new ContentScriptCoordinator(MODEL_LIMITS_DB);
+    if (!provider) coordinator.prefetch();
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => coordinator.init());
     } else {

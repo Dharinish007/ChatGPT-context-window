@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChatGPT Context Monitor",
   "version": "1.0.0",
-  "description": "Calculates and displays accurate context-window utilization on ChatGPT Web with verified truth-in-measurement metrics.",
+  "description": "Calculates and displays context-window usage on ChatGPT, Claude and Gemini with verified truth-in-measurement metrics.",
   "icons": {
     "16": "assets/icons/icon-16.png",
     "48": "assets/icons/icon-48.png",
@@ -35,7 +35,9 @@
     {
       "matches": [
         "https://chatgpt.com/*",
-        "https://chat.openai.com/*"
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
       ],
       "js": [
         "content/content-script.js"
@@ -48,6 +50,8 @@
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
-    "https://chat.openai.com/*"
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
   ]
 }

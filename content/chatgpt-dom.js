@@ -14,6 +14,8 @@ export class ChatGPTDOMObserver {
   constructor(options = {}) {
     this.onChange = options.onChange || (() => {});
     this.debounceMs = options.debounceMs || 120;
+    // The chat input of the site (typing there never changes the conversation's context)
+    this.composerSelector = options.composerSelector || '#prompt-textarea';
     // Upper bound on how long a burst of mutations can postpone an update. Without it, a page that
     // never stops mutating (initial render, animations) kept pushing the trailing debounce back.
     this.maxWaitMs = options.maxWaitMs || 400;
@@ -113,7 +115,8 @@ export class ChatGPTDOMObserver {
     if (!node || !node.closest) return true;
     if (node.closest('#chatgpt-context-monitor-host, nav')) return false;
     if (!this._composer || !this._composer.isConnected) {
-      this._composer = document.querySelector('#prompt-textarea')?.closest('form') || null;
+      const input = document.querySelector(this.composerSelector);
+      this._composer = input ? (input.closest('form, fieldset') || input) : null;
     }
     if (this._composer && this._composer.contains(node)) {
       return Boolean(node.closest("[data-testid*='model-switcher'], [data-testid*='model-selector']"));

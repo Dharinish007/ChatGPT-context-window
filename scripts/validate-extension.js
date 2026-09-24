@@ -58,7 +58,8 @@ for (const cs of manifest.content_scripts || []) {
 // 4. Permissions check
 assert(!manifest.permissions.includes('<all_urls>'), 'Permissions do not contain broad <all_urls>');
 assert(manifest.permissions.includes('storage'), 'Required "storage" permission declared');
-assert(manifest.host_permissions && manifest.host_permissions.length === 2, 'Host permissions specifically scoped to chatgpt.com & chat.openai.com');
+const SUPPORTED_HOSTS = ['https://chatgpt.com/*', 'https://chat.openai.com/*', 'https://claude.ai/*', 'https://gemini.google.com/*'];
+assert(JSON.stringify([...(manifest.host_permissions || [])].sort()) === JSON.stringify([...SUPPORTED_HOSTS].sort()), 'Host permissions scoped exactly to ChatGPT, Claude and Gemini');
 
 // 5. Config files check
 assert(fs.existsSync(path.join(rootDir, 'config', 'model-limits.json')), 'config/model-limits.json exists');
