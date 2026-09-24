@@ -42,6 +42,10 @@ export class RequestObserver {
     this.pendingUserTurn = null; // { id, role: 'user', parts, text, source: 'network', evidenceType: 'OBSERVED' }
     this.activeStreamingTurn = null; // { id, role: 'assistant', parts, text, isStreaming: true, ... }
     this.observedTools = new Map(); // toolName -> { name, status, source: 'network', evidenceType: 'OBSERVED' }
+    // Every network-observed turn of the active conversation, in arrival order (messageId -> turn).
+    // Holding all of them (not just the latest) keeps rapid consecutive messages when the API lags.
+    this.liveTurns = new Map();
+    this._completedStreams = new Set(); // streamKeys already completed (GENERATION_DONE + STREAM_COMPLETED)
 
     this._messageListener = (event) => this.handleMessage(event);
     this._isListening = false;
@@ -104,6 +108,7 @@ export class RequestObserver {
           break;
 
         case 'STREAM_STARTED':
+          if (this._isForeign(payload)) break;
           this.activeStreamsCount++;
           if (payload.conversationId) {
             this.activeConversationId = payload.conversationId;
@@ -128,22 +133,30 @@ export class RequestObserver {
 
         case 'GENERATION_DONE':
         case 'STREAM_COMPLETED':
+          if (this._isForeign(payload)) break;
+          // Both events arrive for one stream; complete it once so we refresh once
+          if (payload.streamKey) {
+            if (this._completedStreams.has(payload.streamKey)) break;
+            this._completedStreams.add(payload.streamKey);
+            if (this._completedStreams.size > 50) {
+              this._completedStreams.delete(this._completedStreams.values().next().value);
+            }
+          }
           this._handleStreamCompleted(payload);
           break;
 
         case 'STREAM_ABORTED':
+          if (this._isForeign(payload)) break;
           this.activeStreamsCount = Math.max(0, this.activeStreamsCount - 1);
           if (this.activeStreamingTurn) {
             this.activeStreamingTurn.isStreaming = false;
             this.activeStreamingTurn.status = 'aborted';
+            this._upsertLiveTurn(this.activeStreamingTurn);
           }
           break;
 
         case 'CONVERSATION_LOADED':
-          if (payload.conversationId) {
-            this.activeConversationId = payload.conversationId;
-          }
-          if (payload.modelSlug) {
+          if (payload.modelSlug && payload.conversationId && payload.conversationId === this.activeConversationId) {
             this.observedModel = {
               value: payload.modelSlug,
               source: 'network',
@@ -211,7 +224,7 @@ export class RequestObserver {
    */
   _handleConversationRequest(payload) {
     if (payload.conversationId) {
-      this.activeConversationId = payload.conversationId;
+      this.setActiveConversationId(payload.conversationId);
     }
 
     if (payload.model) {
@@ -231,8 +244,11 @@ export class RequestObserver {
         text: payload.userMessage.text || '',
         contentType: payload.userMessage.contentType || 'text',
         source: 'network',
-        evidenceType: 'OBSERVED'
+        evidenceType: 'OBSERVED',
+        conversationId: payload.conversationId || this.activeConversationId || null,
+        isStreaming: false
       };
+      this._upsertLiveTurn(this.pendingUserTurn);
 
       if (typeof this.onPromptSent === 'function') {
         this.onPromptSent(this.pendingUserTurn);
@@ -246,6 +262,10 @@ export class RequestObserver {
    * @private
    */
   _handleStreamChunk(payload) {
+    if (this._isForeign(payload)) return; // Late chunk from a conversation we already left
+    if (!this.activeConversationId && payload.conversationId) {
+      this.activeConversationId = payload.conversationId; // New chat just got its id
+    }
     const text = typeof payload.text === 'string' ? payload.text : '';
     const messageId = payload.messageId || 'net-stream-' + (payload.streamId || 'active');
 
@@ -256,11 +276,13 @@ export class RequestObserver {
       parts: [{ type: 'text', text }],
       text,
       status: payload.status || 'in_progress',
-      isStreaming: payload.status !== 'finished_successfully',
+      isStreaming: !payload.status || payload.status === 'in_progress',
       modelSlug: payload.modelSlug || (this.observedModel ? this.observedModel.value : null),
       source: 'network',
       evidenceType: 'OBSERVED'
     };
+
+    this._upsertLiveTurn(this.activeStreamingTurn);
 
     if (payload.modelSlug && (!this.observedModel || this.observedModel.value !== payload.modelSlug)) {
       this.observedModel = {
@@ -304,6 +326,7 @@ export class RequestObserver {
     if (this.activeStreamingTurn) {
       this.activeStreamingTurn.isStreaming = false;
       this.activeStreamingTurn.status = 'finished_successfully';
+      this._upsertLiveTurn(this.activeStreamingTurn);
     }
 
     // Clear pending user turn once generation is done
@@ -325,7 +348,39 @@ export class RequestObserver {
     this.activeStreamingTurn = null;
     this.pendingUserTurn = null;
     this.observedTools.clear();
+    this.liveTurns.clear();
+    this.observedModel = null; // Model of conversation A must never label conversation B
     this.activeStreamsCount = 0;
+  }
+
+  /**
+   * True when an event names a conversation other than the active one.
+   * @private
+   */
+  _isForeign(payload) {
+    const c = payload && payload.conversationId;
+    return Boolean(c && this.activeConversationId && c !== this.activeConversationId);
+  }
+
+  /**
+   * Inserts or updates a live turn by message id, keeping arrival order; bounded.
+   * @private
+   */
+  _upsertLiveTurn(turn) {
+    if (!turn || !turn.id) return;
+    const existing = this.liveTurns.get(turn.id);
+    this.liveTurns.set(turn.id, existing ? { ...existing, ...turn } : { ...turn });
+    if (this.liveTurns.size > 40) {
+      this.liveTurns.delete(this.liveTurns.keys().next().value);
+    }
+  }
+
+  /**
+   * All network-observed turns of the active conversation, oldest first.
+   * @returns {Array<Object>}
+   */
+  getLiveTurns() {
+    return Array.from(this.liveTurns.values());
   }
 
   /**

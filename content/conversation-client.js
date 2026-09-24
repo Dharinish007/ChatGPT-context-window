@@ -25,7 +25,8 @@ export class ConversationClient {
     this.activeFetches = new Map(); // conversationId -> Promise
     this.lastError = null;
     this.failures = new Map(); // conversationId -> { result, timestamp }
-    this.captured = new Map(); // conversationId -> raw payload seen on the page's own request
+    this.captured = new Map(); // conversationId -> last known-good payload (page's own request or our last success)
+    this.fetchSeq = new Map(); // conversationId -> latest request number; older responses never overwrite newer
     this.session = null; // { ok, status, planType, fetchedAt } - safe to expose, holds no token
     this._sessionPromise = null;
   }
@@ -151,10 +152,15 @@ export class ConversationClient {
       return failed.result;
     }
 
-    // Deduplicate concurrent requests for the same conversation ID
-    if (this.activeFetches.has(conversationId)) {
+    // Deduplicate concurrent requests, except a forced refresh: an in-flight request may have
+    // started before the latest message was saved, so reusing it would return stale data
+    if (!fetchOptions.force && this.activeFetches.has(conversationId)) {
       return this.activeFetches.get(conversationId);
     }
+
+    const seq = (this.fetchSeq.get(conversationId) || 0) + 1;
+    this.fetchSeq.set(conversationId, seq);
+    const isLatest = () => this.fetchSeq.get(conversationId) === seq;
 
     const fetchPromise = (async () => {
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -204,11 +210,13 @@ export class ConversationClient {
           return { success: false, error: 'Malformed conversation payload', status: 200 };
         }
 
-        // Cache the raw data
-        this.cache.set(conversationId, {
-          data: rawData,
-          timestamp: now
-        });
+        // Cache the raw data, unless a newer request for this conversation was started meanwhile
+        if (isLatest()) {
+          this.cache.set(conversationId, {
+            data: rawData,
+            timestamp: now
+          });
+        }
 
         this.lastError = null;
         return { success: true, data: rawData };
@@ -225,12 +233,16 @@ export class ConversationClient {
     })();
 
     const resultPromise = fetchPromise.then(result => {
-      this.activeFetches.delete(conversationId);
+      if (this.activeFetches.get(conversationId) === resultPromise) {
+        this.activeFetches.delete(conversationId);
+      }
       if (result.success) {
         this.failures.delete(conversationId);
+        // Keep as last known-good, so one failed refresh never collapses the count to DOM-only
+        if (isLatest()) this.captured.set(conversationId, result.data);
         return result;
       }
-      // Our fetch failed: fall back to the copy captured from the page's own request
+      // Our fetch failed: fall back to the last known-good copy (page's own request or our last success)
       const captured = this.captured.get(conversationId);
       if (captured) return { success: true, data: captured, fromCapture: true, fetchError: result.error };
       this.failures.set(conversationId, { result, timestamp: Date.now() });

@@ -146,6 +146,9 @@
     if (!stream || typeof stream.getReader !== 'function') return;
 
     const reader = stream.getReader();
+    // Stable id for this stream: streamId changes once conversation_id arrives, this never does
+    const streamKey = `sk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const emit = (eventType, payload) => dispatchNetworkEvent(eventType, { ...payload, streamKey });
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let streamId = meta.conversationId || 'stream-' + Date.now();
@@ -156,9 +159,43 @@
     let detectedTools = [];
     let lastDispatchTime = 0;
     let lastDeltaPath = null; // Delta v1 omits "p"/"o" on consecutive appends to the same path
+    let currentRole = 'assistant'; // Role of the message currently streaming (assistant, tool, user echo)
+    let completed = false;
     const DISPATCH_THROTTLE_MS = 50;
 
-    dispatchNetworkEvent('STREAM_STARTED', {
+    // Sends the full accumulated text of the current message, bypassing the throttle.
+    // System/internal messages are never reported as conversation turns.
+    const flushChunk = (status) => {
+      if (!accumulatedText || currentRole === 'system') return;
+      emit('STREAM_CHUNK', {
+        streamId,
+        conversationId: meta.conversationId,
+        messageId: currentMessageId,
+        role: currentRole,
+        text: accumulatedText,
+        status,
+        modelSlug: currentModelSlug,
+        tools: detectedTools,
+        timestamp: Date.now()
+      });
+    };
+
+    // Exactly one completion per stream, whether it ends with [DONE] or the connection just closes
+    const completeStream = () => {
+      if (completed) return;
+      completed = true;
+      flushChunk('finished_successfully');
+      emit('GENERATION_DONE', {
+        streamId,
+        conversationId: meta.conversationId,
+        messageId: currentMessageId,
+        modelSlug: currentModelSlug,
+        tools: detectedTools,
+        timestamp: Date.now()
+      });
+    };
+
+    emit('STREAM_STARTED', {
       streamId,
       conversationId: meta.conversationId,
       model: meta.model,
@@ -186,28 +223,7 @@
           if (line.startsWith('data:')) {
             const dataStr = line.slice(5).trim();
             if (dataStr === '[DONE]') {
-              // Flush text the throttle held back so the final chunk is never lost
-              if (accumulatedText) {
-                dispatchNetworkEvent('STREAM_CHUNK', {
-                  streamId,
-                  conversationId: meta.conversationId,
-                  messageId: currentMessageId,
-                  role: 'assistant',
-                  text: accumulatedText,
-                  status: 'finished_successfully',
-                  modelSlug: currentModelSlug,
-                  tools: detectedTools,
-                  timestamp: Date.now()
-                });
-              }
-              dispatchNetworkEvent('GENERATION_DONE', {
-                streamId,
-                conversationId: meta.conversationId,
-                messageId: currentMessageId,
-                modelSlug: currentModelSlug,
-                tools: detectedTools,
-                timestamp: Date.now()
-              });
+              completeStream();
               continue;
             }
 
@@ -216,6 +232,8 @@
 
               // Delta v1 wraps a new message as {"o":"add","v":{"message":...}}; unwrap to the classic shape
               if (payload && payload.o === 'add' && payload.v && typeof payload.v === 'object' && payload.v.message) {
+                // Previous message's last throttled text would otherwise be lost
+                flushChunk('finished_successfully');
                 payload = payload.v;
                 accumulatedText = '';
                 lastDeltaPath = null;
@@ -232,6 +250,7 @@
                 const msg = payload.message;
                 currentMessageId = msg.id || currentMessageId;
                 const authorRole = msg.author?.role || 'assistant';
+                currentRole = authorRole;
 
                 // Check model slug
                 if (msg.metadata?.model_slug) {
@@ -243,7 +262,7 @@
                   const toolName = safeString(msg.recipient, 64);
                   if (!detectedTools.includes(toolName)) {
                     detectedTools.push(toolName);
-                    dispatchNetworkEvent('TOOL_INVOKED', {
+                    emit('TOOL_INVOKED', {
                       streamId,
                       toolName,
                       timestamp: Date.now()
@@ -256,7 +275,7 @@
                   const toolName = msg.metadata.action_data?.type || 'tool_call';
                   if (!detectedTools.includes(toolName)) {
                     detectedTools.push(toolName);
-                    dispatchNetworkEvent('TOOL_INVOKED', {
+                    emit('TOOL_INVOKED', {
                       streamId,
                       toolName,
                       timestamp: Date.now()
@@ -273,9 +292,9 @@
 
                 // Throttled stream chunk dispatch
                 const now = Date.now();
-                if (now - lastDispatchTime >= DISPATCH_THROTTLE_MS || msg.status === 'finished_successfully') {
+                if (authorRole !== 'system' && (now - lastDispatchTime >= DISPATCH_THROTTLE_MS || msg.status === 'finished_successfully')) {
                   lastDispatchTime = now;
-                  dispatchNetworkEvent('STREAM_CHUNK', {
+                  emit('STREAM_CHUNK', {
                     streamId,
                     conversationId: meta.conversationId,
                     messageId: currentMessageId,
@@ -305,15 +324,15 @@
                     appended = true;
                   }
                 }
-                if (appended) {
+                if (appended && currentRole !== 'system') {
                   const now = Date.now();
                   if (now - lastDispatchTime >= DISPATCH_THROTTLE_MS) {
                     lastDispatchTime = now;
-                    dispatchNetworkEvent('STREAM_CHUNK', {
+                    emit('STREAM_CHUNK', {
                       streamId,
                       conversationId: meta.conversationId,
                       messageId: currentMessageId,
-                      role: 'assistant',
+                      role: currentRole,
                       text: accumulatedText,
                       status: 'in_progress',
                       modelSlug: currentModelSlug,
@@ -335,17 +354,14 @@
       if (buffer.startsWith('data:')) {
         const remainingData = buffer.slice(5).trim();
         if (remainingData === '[DONE]') {
-          dispatchNetworkEvent('GENERATION_DONE', {
-            streamId,
-            conversationId: meta.conversationId,
-            messageId: currentMessageId,
-            modelSlug: currentModelSlug,
-            timestamp: Date.now()
-          });
+          completeStream();
         }
       }
 
-      dispatchNetworkEvent('STREAM_COMPLETED', {
+      // Connection closed without [DONE]: still flush the final text and complete once
+      completeStream();
+
+      emit('STREAM_COMPLETED', {
         streamId,
         conversationId: meta.conversationId,
         messageId: currentMessageId,
@@ -356,7 +372,8 @@
       });
 
     } catch (err) {
-      dispatchNetworkEvent('STREAM_ABORTED', {
+      flushChunk('aborted');
+      emit('STREAM_ABORTED', {
         streamId,
         conversationId: meta.conversationId,
         messageId: currentMessageId,

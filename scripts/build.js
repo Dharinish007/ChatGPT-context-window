@@ -73,6 +73,7 @@ const widgetStateCode = readCleanModule(path.join(rootDir, 'content', 'widget-st
 const overlayCode = readCleanModule(path.join(rootDir, 'content', 'overlay-ui.js'));
 const domObserverCode = readCleanModule(path.join(rootDir, 'content', 'chatgpt-dom.js'));
 const requestObserverCode = readCleanModule(path.join(rootDir, 'network', 'request-observer.js'));
+const turnMergerCode = readCleanModule(path.join(rootDir, 'content', 'turn-merger.js'));
 const contentMainCode = readCleanModule(path.join(rootDir, 'content', 'content-main.js'));
 
 const bundledContentScript = `/**
@@ -126,6 +127,8 @@ const bundledContentScript = `/**
   ${overlayCode}
 
   ${domObserverCode}
+
+  ${turnMergerCode}
 
   ${contentMainCode}
 

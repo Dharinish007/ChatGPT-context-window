@@ -68,6 +68,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(`tab_state_${tabId}`).catch(() => {});
 });
 
+// A full page load (refresh, or leaving ChatGPT for another site) invalidates the tab's state.
+// If the new page is ChatGPT, its content script repopulates it; otherwise nothing stale remains.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== 'loading') return;
+  chrome.storage.session.remove(`tab_state_${tabId}`).catch(() => {});
+  if (chrome.action) chrome.action.setBadgeText({ tabId, text: '' }).catch(() => {});
+});
+
 // 2. Message passing listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return false;

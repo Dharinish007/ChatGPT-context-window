@@ -14,6 +14,7 @@ import { runBundleIntegrityTests } from './unit/bundle-integrity.test.js';
 import { runInterceptorTests } from './unit/interceptor.test.js';
 import { runLiveSourcesTests } from './unit/live-sources.test.js';
 import { runWidgetStateTests } from './unit/widget-state.test.js';
+import { runReliabilityTests } from './unit/reliability.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -94,6 +95,12 @@ console.log('');
 const r12 = runWidgetStateTests();
 totalPassed += r12.passed;
 totalFailed += r12.failed;
+console.log('');
+
+// 13. Pipeline reliability regressions
+const r13 = await runReliabilityTests();
+totalPassed += r13.passed;
+totalFailed += r13.failed;
 console.log('');
 
 const t1 = performance.now();

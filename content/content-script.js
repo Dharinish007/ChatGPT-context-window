@@ -2318,6 +2318,10 @@ class RequestObserver {
     this.pendingUserTurn = null; // { id, role: 'user', parts, text, source: 'network', evidenceType: 'OBSERVED' }
     this.activeStreamingTurn = null; // { id, role: 'assistant', parts, text, isStreaming: true, ... }
     this.observedTools = new Map(); // toolName -> { name, status, source: 'network', evidenceType: 'OBSERVED' }
+    // Every network-observed turn of the active conversation, in arrival order (messageId -> turn).
+    // Holding all of them (not just the latest) keeps rapid consecutive messages when the API lags.
+    this.liveTurns = new Map();
+    this._completedStreams = new Set(); // streamKeys already completed (GENERATION_DONE + STREAM_COMPLETED)
 
     this._messageListener = (event) => this.handleMessage(event);
     this._isListening = false;
@@ -2380,6 +2384,7 @@ class RequestObserver {
           break;
 
         case 'STREAM_STARTED':
+          if (this._isForeign(payload)) break;
           this.activeStreamsCount++;
           if (payload.conversationId) {
             this.activeConversationId = payload.conversationId;
@@ -2404,22 +2409,30 @@ class RequestObserver {
 
         case 'GENERATION_DONE':
         case 'STREAM_COMPLETED':
+          if (this._isForeign(payload)) break;
+          // Both events arrive for one stream; complete it once so we refresh once
+          if (payload.streamKey) {
+            if (this._completedStreams.has(payload.streamKey)) break;
+            this._completedStreams.add(payload.streamKey);
+            if (this._completedStreams.size > 50) {
+              this._completedStreams.delete(this._completedStreams.values().next().value);
+            }
+          }
           this._handleStreamCompleted(payload);
           break;
 
         case 'STREAM_ABORTED':
+          if (this._isForeign(payload)) break;
           this.activeStreamsCount = Math.max(0, this.activeStreamsCount - 1);
           if (this.activeStreamingTurn) {
             this.activeStreamingTurn.isStreaming = false;
             this.activeStreamingTurn.status = 'aborted';
+            this._upsertLiveTurn(this.activeStreamingTurn);
           }
           break;
 
         case 'CONVERSATION_LOADED':
-          if (payload.conversationId) {
-            this.activeConversationId = payload.conversationId;
-          }
-          if (payload.modelSlug) {
+          if (payload.modelSlug && payload.conversationId && payload.conversationId === this.activeConversationId) {
             this.observedModel = {
               value: payload.modelSlug,
               source: 'network',
@@ -2487,7 +2500,7 @@ class RequestObserver {
    */
   _handleConversationRequest(payload) {
     if (payload.conversationId) {
-      this.activeConversationId = payload.conversationId;
+      this.setActiveConversationId(payload.conversationId);
     }
 
     if (payload.model) {
@@ -2507,8 +2520,11 @@ class RequestObserver {
         text: payload.userMessage.text || '',
         contentType: payload.userMessage.contentType || 'text',
         source: 'network',
-        evidenceType: 'OBSERVED'
+        evidenceType: 'OBSERVED',
+        conversationId: payload.conversationId || this.activeConversationId || null,
+        isStreaming: false
       };
+      this._upsertLiveTurn(this.pendingUserTurn);
 
       if (typeof this.onPromptSent === 'function') {
         this.onPromptSent(this.pendingUserTurn);
@@ -2522,6 +2538,10 @@ class RequestObserver {
    * @private
    */
   _handleStreamChunk(payload) {
+    if (this._isForeign(payload)) return; // Late chunk from a conversation we already left
+    if (!this.activeConversationId && payload.conversationId) {
+      this.activeConversationId = payload.conversationId; // New chat just got its id
+    }
     const text = typeof payload.text === 'string' ? payload.text : '';
     const messageId = payload.messageId || 'net-stream-' + (payload.streamId || 'active');
 
@@ -2532,11 +2552,13 @@ class RequestObserver {
       parts: [{ type: 'text', text }],
       text,
       status: payload.status || 'in_progress',
-      isStreaming: payload.status !== 'finished_successfully',
+      isStreaming: !payload.status || payload.status === 'in_progress',
       modelSlug: payload.modelSlug || (this.observedModel ? this.observedModel.value : null),
       source: 'network',
       evidenceType: 'OBSERVED'
     };
+
+    this._upsertLiveTurn(this.activeStreamingTurn);
 
     if (payload.modelSlug && (!this.observedModel || this.observedModel.value !== payload.modelSlug)) {
       this.observedModel = {
@@ -2580,6 +2602,7 @@ class RequestObserver {
     if (this.activeStreamingTurn) {
       this.activeStreamingTurn.isStreaming = false;
       this.activeStreamingTurn.status = 'finished_successfully';
+      this._upsertLiveTurn(this.activeStreamingTurn);
     }
 
     // Clear pending user turn once generation is done
@@ -2601,7 +2624,39 @@ class RequestObserver {
     this.activeStreamingTurn = null;
     this.pendingUserTurn = null;
     this.observedTools.clear();
+    this.liveTurns.clear();
+    this.observedModel = null; // Model of conversation A must never label conversation B
     this.activeStreamsCount = 0;
+  }
+
+  /**
+   * True when an event names a conversation other than the active one.
+   * @private
+   */
+  _isForeign(payload) {
+    const c = payload && payload.conversationId;
+    return Boolean(c && this.activeConversationId && c !== this.activeConversationId);
+  }
+
+  /**
+   * Inserts or updates a live turn by message id, keeping arrival order; bounded.
+   * @private
+   */
+  _upsertLiveTurn(turn) {
+    if (!turn || !turn.id) return;
+    const existing = this.liveTurns.get(turn.id);
+    this.liveTurns.set(turn.id, existing ? { ...existing, ...turn } : { ...turn });
+    if (this.liveTurns.size > 40) {
+      this.liveTurns.delete(this.liveTurns.keys().next().value);
+    }
+  }
+
+  /**
+   * All network-observed turns of the active conversation, oldest first.
+   * @returns {Array<Object>}
+   */
+  getLiveTurns() {
+    return Array.from(this.liveTurns.values());
   }
 
   /**
@@ -2708,7 +2763,8 @@ class ConversationClient {
     this.activeFetches = new Map(); // conversationId -> Promise
     this.lastError = null;
     this.failures = new Map(); // conversationId -> { result, timestamp }
-    this.captured = new Map(); // conversationId -> raw payload seen on the page's own request
+    this.captured = new Map(); // conversationId -> last known-good payload (page's own request or our last success)
+    this.fetchSeq = new Map(); // conversationId -> latest request number; older responses never overwrite newer
     this.session = null; // { ok, status, planType, fetchedAt } - safe to expose, holds no token
     this._sessionPromise = null;
   }
@@ -2834,10 +2890,15 @@ class ConversationClient {
       return failed.result;
     }
 
-    // Deduplicate concurrent requests for the same conversation ID
-    if (this.activeFetches.has(conversationId)) {
+    // Deduplicate concurrent requests, except a forced refresh: an in-flight request may have
+    // started before the latest message was saved, so reusing it would return stale data
+    if (!fetchOptions.force && this.activeFetches.has(conversationId)) {
       return this.activeFetches.get(conversationId);
     }
+
+    const seq = (this.fetchSeq.get(conversationId) || 0) + 1;
+    this.fetchSeq.set(conversationId, seq);
+    const isLatest = () => this.fetchSeq.get(conversationId) === seq;
 
     const fetchPromise = (async () => {
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -2887,11 +2948,13 @@ class ConversationClient {
           return { success: false, error: 'Malformed conversation payload', status: 200 };
         }
 
-        // Cache the raw data
-        this.cache.set(conversationId, {
-          data: rawData,
-          timestamp: now
-        });
+        // Cache the raw data, unless a newer request for this conversation was started meanwhile
+        if (isLatest()) {
+          this.cache.set(conversationId, {
+            data: rawData,
+            timestamp: now
+          });
+        }
 
         this.lastError = null;
         return { success: true, data: rawData };
@@ -2908,12 +2971,16 @@ class ConversationClient {
     })();
 
     const resultPromise = fetchPromise.then(result => {
-      this.activeFetches.delete(conversationId);
+      if (this.activeFetches.get(conversationId) === resultPromise) {
+        this.activeFetches.delete(conversationId);
+      }
       if (result.success) {
         this.failures.delete(conversationId);
+        // Keep as last known-good, so one failed refresh never collapses the count to DOM-only
+        if (isLatest()) this.captured.set(conversationId, result.data);
         return result;
       }
-      // Our fetch failed: fall back to the copy captured from the page's own request
+      // Our fetch failed: fall back to the last known-good copy (page's own request or our last success)
       const captured = this.captured.get(conversationId);
       if (captured) return { success: true, data: captured, fromCapture: true, fetchError: result.error };
       this.failures.set(conversationId, { result, timestamp: Date.now() });
@@ -4723,11 +4790,92 @@ class ChatGPTDOMObserver {
 
 
   /**
+ * ChatGPT Context Monitor - Live Turn Merger
+ *
+ * Merges in-flight turns (network stream, rendered-but-unsaved DOM turn) into the base message list
+ * (authoritative API tree, or DOM fallback) without double counting and without dropping new turns.
+ *
+ * Identity rules:
+ * - ChatGPT assigns every message a UUID that is identical in the request body, the SSE stream,
+ *   the conversation API and the DOM (data-message-id). Matching is by that id first.
+ * - Text matching is only a fallback when one side has a synthetic id (e.g. "turn-3-user",
+ *   "net-usr-..."), and only against the latest message of the same role, so a genuinely
+ *   repeated message ("yes", "yes") is never swallowed.
+ */
+
+const REAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isRealMessageId(id) {
+  return typeof id === 'string' && REAL_ID.test(id);
+}
+
+/**
+ * @param {Array<Object>} base Messages from the API tree or the DOM
+ * @param {Array<Object>} candidates Live turns (network turns in arrival order, then a DOM streaming turn)
+ * @param {{ conversationId?: string|null, baseIsFinal?: boolean }} [opts]
+ *   baseIsFinal: base came from the API, so a finished base message is never overwritten
+ * @returns {Array<Object>} New array; inputs are not mutated
+ */
+function mergeLiveTurns(base, candidates, opts = {}) {
+  const { conversationId = null, baseIsFinal = false } = opts;
+  const out = base.map(m => ({ ...m }));
+
+  for (const t of candidates) {
+    if (!t || !t.role || t.role === 'system') continue;
+    // A turn tagged with another conversation never leaks into this one
+    if (conversationId && t.conversationId && t.conversationId !== conversationId) continue;
+    const text = t.text || '';
+
+    let idx = t.id ? out.findIndex(m => m.id === t.id) : -1;
+
+    if (idx === -1) {
+      // Fallback identity: latest message of the same role, when either id is synthetic
+      let lastSameRole = -1;
+      for (let i = out.length - 1; i >= 0; i--) {
+        if (out[i].role === t.role) { lastSameRole = i; break; }
+      }
+      const cand = lastSameRole === -1 ? null : out[lastSameRole];
+      if (cand && (!isRealMessageId(cand.id) || !isRealMessageId(t.id))) {
+        const candText = cand.text || '';
+        const sameText = candText === text;
+        // A streaming turn and its growing copy share a prefix; only the tail can be streaming
+        const sameStream = lastSameRole === out.length - 1 && (cand.isStreaming || t.isStreaming) &&
+          (candText.startsWith(text) || text.startsWith(candText));
+        if (sameText || sameStream) idx = lastSameRole;
+      }
+    }
+
+    if (idx === -1) {
+      out.push({ ...t, parts: t.parts || [{ type: 'text', text }], text });
+      continue;
+    }
+
+    const m = out[idx];
+    if (baseIsFinal && idx < base.length && !m.isStreaming && !t.isStreaming) {
+      continue; // The saved API copy is the truth for a finished message
+    }
+    const mText = m.text || '';
+    const longer = text.length > mText.length ? t : m;
+    out[idx] = {
+      ...m,
+      id: isRealMessageId(m.id) ? m.id : (t.id || m.id),
+      text: longer === t ? text : mText,
+      parts: longer === t ? (t.parts || [{ type: 'text', text }]) : (m.parts || [{ type: 'text', text: mText }]),
+      isStreaming: Boolean(t.isStreaming)
+    };
+  }
+
+  return out;
+}
+
+
+  /**
  * ChatGPT Context Monitor - Content Script Coordinator
  * 
  * Coordinates DOM extraction, model detection, tokenization,
  * context calculation, UI HUD updates, and background messaging.
  */
+
 
 
 
@@ -4762,6 +4910,7 @@ class ContentScriptCoordinator {
     this.activeConversationId = null;
     this._streamRafId = null;
     this._runSeq = 0; // Guards against older async passes overwriting newer state
+    this._lastUrlConversationId = null;
 
     // Network Intelligence Observer (Group C)
     this.requestObserver = new RequestObserver({
@@ -4817,10 +4966,11 @@ class ContentScriptCoordinator {
    */
   handleStreamingChunk(turn) {
     if (this._streamRafId) return;
-    this._streamRafId = requestAnimationFrame(() => {
+    // setTimeout, not requestAnimationFrame: rAF is paused in background tabs, which froze live counts
+    this._streamRafId = setTimeout(() => {
       this._streamRafId = null;
       this.handleDOMChange({ isStreamProgress: true });
-    });
+    }, 50);
   }
 
   /**
@@ -4853,11 +5003,26 @@ class ContentScriptCoordinator {
     if (meta.conversationId && meta.data) {
       this.conversationClient.ingestConversation(meta.conversationId, meta.data);
     }
-    if (meta.conversationId && meta.conversationId !== this.activeConversationId) {
-      this.activeConversationId = meta.conversationId;
-      this.requestObserver.setActiveConversationId(meta.conversationId);
+    // Only re-run when it is the conversation on screen; the page also prefetches others
+    // (e.g. on sidebar hover), and those must never become the active conversation.
+    if (!meta.conversationId || meta.conversationId === this.conversationClient.extractConversationId()) {
+      this.handleDOMChange({ isConversationLoaded: true });
     }
-    this.handleDOMChange({ isConversationLoaded: true });
+  }
+
+  /**
+   * Which conversation is on screen. The URL is the source of truth; without an id in the URL
+   * (new chat) the network id is used, but only one adopted on this page: leaving /c/<id> for a
+   * new chat drops the previous conversation's network state so nothing carries over.
+   * @returns {string|null}
+   */
+  resolveConversationId() {
+    const urlConversationId = this.conversationClient.extractConversationId();
+    if (!urlConversationId && this._lastUrlConversationId) {
+      this.requestObserver.setActiveConversationId(null);
+    }
+    this._lastUrlConversationId = urlConversationId;
+    return urlConversationId || this.requestObserver.getActiveConversationId();
   }
 
   /**
@@ -4879,7 +5044,7 @@ class ContentScriptCoordinator {
     const runSeq = ++this._runSeq;
     try {
       // 1. Identify active conversation ID from URL or Network, and handle navigation
-      const conversationId = this.conversationClient.extractConversationId() || this.requestObserver.getActiveConversationId();
+      const conversationId = this.resolveConversationId();
       const isNewConversation = conversationId !== this.activeConversationId;
 
       if (event.isNavigation || isNewConversation) {
@@ -4950,68 +5115,18 @@ class ContentScriptCoordinator {
         modelProvenance = { source: 'dom', evidenceType: 'OBSERVED' };
       }
 
-      // 5. Supplement with in-flight Network evidence
-      // 5a. In-flight User Prompt (observed immediately on POST before API or DOM settles)
-      const pendingUserTurn = this.requestObserver.getPendingUserTurn();
-      if (pendingUserTurn) {
-        const alreadyExists = effectiveMessages.some(m => 
-          m.id === pendingUserTurn.id || 
-          (m.role === 'user' && m.text && m.text === pendingUserTurn.text)
-        );
-        if (!alreadyExists) {
-          effectiveMessages.push(pendingUserTurn);
-        }
-      }
-
-      // 5b. Live Streaming Assistant Turn (from Network SSE stream or DOM)
-      const netStreamingTurn = this.requestObserver.getStreamingTurn();
+      // 5. Merge in-flight turns: every network turn of this conversation (arrival order), plus a
+      //    DOM turn still streaming when the base is the API tree. Matched by message id, so
+      //    DOM + network + API overlap is never double counted and new turns are never dropped.
       const domStreamingTurn = rawDomMessages.find(m => m.isStreaming);
-
-      let activeStreamingTurn = null;
-      if (netStreamingTurn && netStreamingTurn.isStreaming) {
-        activeStreamingTurn = netStreamingTurn;
-        // If DOM has longer text, prefer the longer text without duplicating
-        if (domStreamingTurn && domStreamingTurn.text && domStreamingTurn.text.length > activeStreamingTurn.text.length) {
-          activeStreamingTurn = {
-            ...activeStreamingTurn,
-            text: domStreamingTurn.text,
-            parts: [{ type: 'text', text: domStreamingTurn.text }],
-            source: 'dom'
-          };
-        }
-      } else if (domStreamingTurn) {
-        activeStreamingTurn = domStreamingTurn;
+      const liveCandidates = [...this.requestObserver.getLiveTurns()];
+      if (domStreamingTurn && dataSource === 'authoritative') {
+        liveCandidates.push(domStreamingTurn);
       }
-
-      // A just-finished network turn may not be in API data yet (e.g. API refresh failed); keep it
-      if (!activeStreamingTurn && netStreamingTurn && netStreamingTurn.text &&
-          (!netStreamingTurn.conversationId || netStreamingTurn.conversationId === conversationId) &&
-          !effectiveMessages.some(m => m.id === netStreamingTurn.id || m.text === netStreamingTurn.text)) {
-        effectiveMessages.push({ ...netStreamingTurn, isStreaming: false });
-      }
-
-      if (activeStreamingTurn) {
-        // Prevent duplicate messages: update in-place if ID or streaming slot exists
-        const existingIndex = effectiveMessages.findIndex(m => m.id === activeStreamingTurn.id);
-        if (existingIndex !== -1) {
-          effectiveMessages[existingIndex] = {
-            ...effectiveMessages[existingIndex],
-            ...activeStreamingTurn,
-            isStreaming: true
-          };
-        } else {
-          const lastEff = effectiveMessages[effectiveMessages.length - 1];
-          if (lastEff && lastEff.role === activeStreamingTurn.role && (lastEff.id === activeStreamingTurn.id || lastEff.isStreaming)) {
-            effectiveMessages[effectiveMessages.length - 1] = {
-              ...lastEff,
-              ...activeStreamingTurn,
-              isStreaming: true
-            };
-          } else {
-            effectiveMessages.push(activeStreamingTurn);
-          }
-        }
-      }
+      effectiveMessages = mergeLiveTurns(effectiveMessages, liveCandidates, {
+        conversationId,
+        baseIsFinal: dataSource === 'authoritative'
+      });
 
       const encoding = model?.encoding || 'o200k_base';
 
