@@ -14,16 +14,16 @@
   // Embedded verified model limits configuration
   const MODEL_LIMITS_DB = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "2.0.0",
-  "lastUpdated": "2026-09-22",
+  "version": "2.1.0",
+  "lastUpdated": "2026-09-24",
   "metadata": {
     "name": "ChatGPT Context Monitor - Model & Plan Context Limits Database",
     "description": "Verified model and subscription tier context limits for ChatGPT Web product interface vs OpenAI Developer API.",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "schemaVersion": "2.0",
     "refreshable": true,
     "sourceUrl": "https://platform.openai.com/docs/models",
-    "lastVerified": "2026-09-22"
+    "lastVerified": "2026-09-24"
   },
   "plans": {
     "free": {
@@ -100,6 +100,150 @@
     }
   },
   "models": {
+    "chatgpt-reasoning": {
+      "displayName": "Thinking",
+      "family": true,
+      "aliases": [
+        "o3",
+        "o3-pro",
+        "o4-mini",
+        "o4-mini-high"
+      ],
+      "patterns": [
+        "^o[3-9](-|$)",
+        "^(gpt-?)?[5-9][\\w.]*([\\s-][\\w.]+)*[\\s-](thinking|reasoning|pro|t)([\\s-]|$)"
+      ],
+      "encoding": "o200k_base",
+      "apiContextLimit": null,
+      "contextWindow": null,
+      "maxOutput": null,
+      "apiSource": "ChatGPT reasoning-model family (limits are per ChatGPT plan, not per model)",
+      "apiLastVerified": "2026-09-24",
+      "productLimits": {
+        "free": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24",
+          "notes": "Pricing page lists reasoning context for Free as \"Varies\"."
+        },
+        "go": {
+          "contextWindow": 256000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "plus": {
+          "contextWindow": 256000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "pro": {
+          "contextWindow": 400000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "team": {
+          "contextWindow": 256000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24",
+          "notes": "Team was renamed Business; assumed same limit."
+        },
+        "business": {
+          "contextWindow": 256000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "enterprise": {
+          "contextWindow": 256000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "edu": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "No published figure",
+          "lastVerified": "2026-09-24",
+          "notes": "Context limit marked UNKNOWN."
+        }
+      }
+    },
+    "chatgpt-instant": {
+      "displayName": "Instant",
+      "family": true,
+      "aliases": [
+        "gpt-4.1",
+        "gpt-4-1",
+        "gpt-4.1-mini",
+        "gpt-4-1-mini"
+      ],
+      "patterns": [
+        "^(gpt-?)?[5-9]([.\\s-]|$)"
+      ],
+      "encoding": "o200k_base",
+      "apiContextLimit": null,
+      "contextWindow": null,
+      "maxOutput": null,
+      "apiSource": "ChatGPT instant-model family (limits are per ChatGPT plan, not per model)",
+      "apiLastVerified": "2026-09-24",
+      "productLimits": {
+        "free": {
+          "contextWindow": 27000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "go": {
+          "contextWindow": 54000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "plus": {
+          "contextWindow": 54000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "team": {
+          "contextWindow": 54000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24",
+          "notes": "Team was renamed Business; assumed same limit."
+        },
+        "business": {
+          "contextWindow": 54000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "edu": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "No published figure",
+          "lastVerified": "2026-09-24",
+          "notes": "Context limit marked UNKNOWN."
+        }
+      }
+    },
     "gpt-4o": {
       "displayName": "GPT-4o",
       "aliases": ["gpt-4o", "4o", "chatgpt-4o", "omni"],
@@ -379,7 +523,7 @@
     },
     "o3-mini": {
       "displayName": "o3-mini",
-      "aliases": ["o3-mini", "openai-o3-mini", "o3"],
+      "aliases": ["o3-mini", "openai-o3-mini"],
       "encoding": "o200k_base",
       "apiContextLimit": 200000,
       "contextWindow": 200000,
@@ -2098,7 +2242,8 @@ class ContextCalculator {
           contextWindow: {
             value: contextWindow,
             source: 'model_db',
-            evidenceType: contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+            // Looked up from a curated table, not reported by ChatGPT, so never EXACT
+            evidenceType: contextWindow ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
           }
         },
         completeness: {
@@ -3470,10 +3615,10 @@ class ModelDetector {
         if (text && !text.includes('ChatGPT') && text.length < 50) {
           return text;
         }
-        // If it says "ChatGPT 4o" or similar, extract model part
-        if (/ChatGPT\s*([4-9o\.-]+)/i.test(text)) {
-          const match = text.match(/ChatGPT\s*([4-9o\.-]+)/i);
-          return match ? match[1] : text;
+        // "ChatGPT 5.6 Thinking" -> "5.6 Thinking" (keep the mode word; it decides the limit family)
+        const match = text.match(/ChatGPT\s+([^\n]{1,40})/i);
+        if (match) {
+          return match[1].trim();
         }
       }
     }
@@ -3518,21 +3663,21 @@ class ModelDetector {
     let matchedId = null;
     let spec = null;
 
+    const entries = Object.entries(this.models);
     if (this.models[normalized]) {
       matchedId = normalized;
       spec = this.models[normalized];
     } else {
-      for (const [modelId, s] of Object.entries(this.models)) {
-        if (s.aliases && s.aliases.includes(normalized)) {
-          matchedId = modelId;
-          spec = s;
-          break;
-        }
-        if (normalized.includes(modelId)) {
-          matchedId = modelId;
-          spec = s;
-          break;
-        }
+      // Exact alias, then family regex patterns (current ChatGPT slugs change too often to list),
+      // then longest key contained in the string so "gpt-4o-mini-x" never resolves to "gpt-4o"
+      const found =
+        entries.find(([, s]) => s.aliases && s.aliases.includes(normalized)) ||
+        entries.find(([, s]) => Array.isArray(s.patterns) && s.patterns.some(p => new RegExp(p, 'i').test(normalized))) ||
+        entries
+          .filter(([modelId]) => normalized.includes(modelId))
+          .sort((a, b) => b[0].length - a[0].length)[0];
+      if (found) {
+        [matchedId, spec] = found;
       }
     }
 
@@ -3555,13 +3700,16 @@ class ModelDetector {
 
     const apiContextLimit = spec.apiContextLimit ?? spec.contextWindow ?? null;
 
+    // Families cover many live slugs; keep the real slug visible next to the family label
+    const displayName = spec.family ? `${rawModelString.trim()} (${spec.displayName})` : spec.displayName;
+
     // 3. Resolve context window limit
     // If rawPlanString was explicitly provided:
     if (rawPlanString !== null && rawPlanString !== undefined) {
       const limitResult = this.resolveLimit(matchedId, rawPlanString);
       return {
         id: matchedId,
-        displayName: spec.displayName,
+        displayName,
         aliases: spec.aliases || [],
         encoding: spec.encoding || 'o200k_base',
         apiContextLimit,
@@ -3579,7 +3727,7 @@ class ModelDetector {
     // Retains underlying model API context window for callers without plan context
     return {
       id: matchedId,
-      displayName: spec.displayName,
+      displayName,
       aliases: spec.aliases || [],
       encoding: spec.encoding || 'o200k_base',
       apiContextLimit,
@@ -4377,6 +4525,7 @@ class ContentScriptCoordinator {
     this.latestState = null;
     this.activeConversationId = null;
     this._streamRafId = null;
+    this._runSeq = 0; // Guards against older async passes overwriting newer state
 
     // Network Intelligence Observer (Group C)
     this.requestObserver = new RequestObserver({
@@ -4446,7 +4595,7 @@ class ContentScriptCoordinator {
   async handleStreamComplete(meta = {}) {
     const convId = meta.conversationId || this.activeConversationId;
     if (convId) {
-      await this.conversationClient.fetchConversation(convId, { bypassCache: true });
+      await this.conversationClient.fetchConversation(convId, { force: true });
     }
     this.handleDOMChange({ isStreamComplete: true });
   }
@@ -4487,6 +4636,7 @@ class ContentScriptCoordinator {
    * @param {Object} event 
    */
   async handleDOMChange(event = {}) {
+    const runSeq = ++this._runSeq;
     try {
       // 1. Identify active conversation ID from URL or Network, and handle navigation
       const conversationId = this.conversationClient.extractConversationId() || this.requestObserver.getActiveConversationId();
@@ -4832,6 +4982,9 @@ class ContentScriptCoordinator {
       contextState.evidence = reconciled.evidence;
       contextState.conflicts = reconciled.conflicts;
 
+      // A newer pass started while this one awaited the API; its result wins
+      if (runSeq !== this._runSeq) return;
+
       this.latestState = contextState;
 
       // 10. Update in-page floating HUD
@@ -4846,26 +4999,17 @@ class ContentScriptCoordinator {
   }
 
   /**
-   * Syncs context state to chrome.storage.session and notifies service worker.
+   * Sends the full context state to the service worker (badge + per-tab popup cache).
    * @param {Object} state 
    */
   syncState(state) {
-    if (typeof chrome === 'undefined' || !chrome.storage) return;
+    if (typeof chrome === 'undefined') return;
 
-    // Persist to session storage for instant action popup display
-    try {
-      chrome.storage.session.set({ latestContextState: state }).catch(() => {});
-    } catch (_) {}
-
-    // Send message to service worker to update action badge
+    // Send full state: the service worker caches it per tab and the popup renders from it
     if (chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({
         type: 'CONTEXT_UPDATED',
-        payload: {
-          utilization: state.utilization,
-          model: state.model,
-          tokens: state.tokens
-        }
+        payload: state
       }).catch(() => {
         // Suppress errors when service worker is temporarily inactive
       });

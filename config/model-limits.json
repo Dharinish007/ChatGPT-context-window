@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "2.0.0",
-  "lastUpdated": "2026-09-22",
+  "version": "2.1.0",
+  "lastUpdated": "2026-09-24",
   "metadata": {
     "name": "ChatGPT Context Monitor - Model & Plan Context Limits Database",
     "description": "Verified model and subscription tier context limits for ChatGPT Web product interface vs OpenAI Developer API.",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "schemaVersion": "2.0",
     "refreshable": true,
     "sourceUrl": "https://platform.openai.com/docs/models",
-    "lastVerified": "2026-09-22"
+    "lastVerified": "2026-09-24"
   },
   "plans": {
     "free": {
@@ -86,6 +86,150 @@
     }
   },
   "models": {
+    "chatgpt-reasoning": {
+      "displayName": "Thinking",
+      "family": true,
+      "aliases": [
+        "o3",
+        "o3-pro",
+        "o4-mini",
+        "o4-mini-high"
+      ],
+      "patterns": [
+        "^o[3-9](-|$)",
+        "^(gpt-?)?[5-9][\\w.]*([\\s-][\\w.]+)*[\\s-](thinking|reasoning|pro|t)([\\s-]|$)"
+      ],
+      "encoding": "o200k_base",
+      "apiContextLimit": null,
+      "contextWindow": null,
+      "maxOutput": null,
+      "apiSource": "ChatGPT reasoning-model family (limits are per ChatGPT plan, not per model)",
+      "apiLastVerified": "2026-09-24",
+      "productLimits": {
+        "free": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24",
+          "notes": "Pricing page lists reasoning context for Free as \"Varies\"."
+        },
+        "go": {
+          "contextWindow": 256000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "plus": {
+          "contextWindow": 256000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "pro": {
+          "contextWindow": 400000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "team": {
+          "contextWindow": 256000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24",
+          "notes": "Team was renamed Business; assumed same limit."
+        },
+        "business": {
+          "contextWindow": 256000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "enterprise": {
+          "contextWindow": 256000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "edu": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "No published figure",
+          "lastVerified": "2026-09-24",
+          "notes": "Context limit marked UNKNOWN."
+        }
+      }
+    },
+    "chatgpt-instant": {
+      "displayName": "Instant",
+      "family": true,
+      "aliases": [
+        "gpt-4.1",
+        "gpt-4-1",
+        "gpt-4.1-mini",
+        "gpt-4-1-mini"
+      ],
+      "patterns": [
+        "^(gpt-?)?[5-9]([.\\s-]|$)"
+      ],
+      "encoding": "o200k_base",
+      "apiContextLimit": null,
+      "contextWindow": null,
+      "maxOutput": null,
+      "apiSource": "ChatGPT instant-model family (limits are per ChatGPT plan, not per model)",
+      "apiLastVerified": "2026-09-24",
+      "productLimits": {
+        "free": {
+          "contextWindow": 27000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "go": {
+          "contextWindow": 54000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "plus": {
+          "contextWindow": 54000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "pro": {
+          "contextWindow": 128000,
+          "status": "VERIFIED",
+          "source": "ChatGPT Pricing (chatgpt.com/pricing)",
+          "lastVerified": "2026-09-24"
+        },
+        "team": {
+          "contextWindow": 54000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24",
+          "notes": "Team was renamed Business; assumed same limit."
+        },
+        "business": {
+          "contextWindow": 54000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "enterprise": {
+          "contextWindow": 128000,
+          "status": "UNVERIFIED",
+          "source": "Third-party plan table (ai-toolbox.co); not on the public pricing page",
+          "lastVerified": "2026-09-24"
+        },
+        "edu": {
+          "contextWindow": null,
+          "status": "UNVERIFIED",
+          "source": "No published figure",
+          "lastVerified": "2026-09-24",
+          "notes": "Context limit marked UNKNOWN."
+        }
+      }
+    },
     "gpt-4o": {
       "displayName": "GPT-4o",
       "aliases": ["gpt-4o", "4o", "chatgpt-4o", "omni"],
@@ -365,7 +509,7 @@
     },
     "o3-mini": {
       "displayName": "o3-mini",
-      "aliases": ["o3-mini", "openai-o3-mini", "o3"],
+      "aliases": ["o3-mini", "openai-o3-mini"],
       "encoding": "o200k_base",
       "apiContextLimit": 200000,
       "contextWindow": 200000,

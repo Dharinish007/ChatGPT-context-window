@@ -63,6 +63,11 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
+// Drop cached per-tab state when a tab closes
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove(`tab_state_${tabId}`).catch(() => {});
+});
+
 // 2. Message passing listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return false;
@@ -71,10 +76,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CONTEXT_UPDATED') {
     (async () => {
       const tabId = sender.tab?.id;
-      const { utilization, model, tokens } = message.payload || {};
 
       // Update toolbar badge
-      await updateActionBadge(tabId, utilization);
+      await updateActionBadge(tabId, message.payload?.utilization);
 
       // Cache latest state in session storage for the tab
       if (tabId) {
@@ -101,8 +105,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // Check session storage first
         const key = `tab_state_${activeTab.id}`;
-        const stored = await chrome.storage.session.get([key, 'latestContextState']);
-        const tabState = stored[key] || stored.latestContextState;
+        // Per-tab only: the global latestContextState may belong to another ChatGPT tab
+        const stored = await chrome.storage.session.get(key);
+        const tabState = stored[key];
 
         if (tabState) {
           sendResponse({ success: true, state: tabState, tabId: activeTab.id });

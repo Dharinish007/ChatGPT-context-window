@@ -283,7 +283,8 @@ export class ContextCalculator {
           contextWindow: {
             value: contextWindow,
             source: 'model_db',
-            evidenceType: contextWindow ? EvidenceType.EXACT : EvidenceType.UNKNOWN
+            // Looked up from a curated table, not reported by ChatGPT, so never EXACT
+            evidenceType: contextWindow ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
           }
         },
         completeness: {

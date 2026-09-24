@@ -211,7 +211,12 @@ async function main() {
         }
       };
       window.chrome.runtime = {
-        sendMessage: (msg) => Promise.resolve({ success: true }),
+        sendMessage: (msg) => {
+          if (msg && msg.type === 'CONTEXT_UPDATED') {
+            window.__latestStoredState = { latestContextState: msg.payload };
+          }
+          return Promise.resolve({ success: true });
+        },
         onMessage: { addListener: () => {} }
       };
     `;

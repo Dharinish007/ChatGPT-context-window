@@ -193,10 +193,10 @@ export class ModelDetector {
         if (text && !text.includes('ChatGPT') && text.length < 50) {
           return text;
         }
-        // If it says "ChatGPT 4o" or similar, extract model part
-        if (/ChatGPT\s*([4-9o\.-]+)/i.test(text)) {
-          const match = text.match(/ChatGPT\s*([4-9o\.-]+)/i);
-          return match ? match[1] : text;
+        // "ChatGPT 5.6 Thinking" -> "5.6 Thinking" (keep the mode word; it decides the limit family)
+        const match = text.match(/ChatGPT\s+([^\n]{1,40})/i);
+        if (match) {
+          return match[1].trim();
         }
       }
     }
@@ -241,21 +241,21 @@ export class ModelDetector {
     let matchedId = null;
     let spec = null;
 
+    const entries = Object.entries(this.models);
     if (this.models[normalized]) {
       matchedId = normalized;
       spec = this.models[normalized];
     } else {
-      for (const [modelId, s] of Object.entries(this.models)) {
-        if (s.aliases && s.aliases.includes(normalized)) {
-          matchedId = modelId;
-          spec = s;
-          break;
-        }
-        if (normalized.includes(modelId)) {
-          matchedId = modelId;
-          spec = s;
-          break;
-        }
+      // Exact alias, then family regex patterns (current ChatGPT slugs change too often to list),
+      // then longest key contained in the string so "gpt-4o-mini-x" never resolves to "gpt-4o"
+      const found =
+        entries.find(([, s]) => s.aliases && s.aliases.includes(normalized)) ||
+        entries.find(([, s]) => Array.isArray(s.patterns) && s.patterns.some(p => new RegExp(p, 'i').test(normalized))) ||
+        entries
+          .filter(([modelId]) => normalized.includes(modelId))
+          .sort((a, b) => b[0].length - a[0].length)[0];
+      if (found) {
+        [matchedId, spec] = found;
       }
     }
 
@@ -278,13 +278,16 @@ export class ModelDetector {
 
     const apiContextLimit = spec.apiContextLimit ?? spec.contextWindow ?? null;
 
+    // Families cover many live slugs; keep the real slug visible next to the family label
+    const displayName = spec.family ? `${rawModelString.trim()} (${spec.displayName})` : spec.displayName;
+
     // 3. Resolve context window limit
     // If rawPlanString was explicitly provided:
     if (rawPlanString !== null && rawPlanString !== undefined) {
       const limitResult = this.resolveLimit(matchedId, rawPlanString);
       return {
         id: matchedId,
-        displayName: spec.displayName,
+        displayName,
         aliases: spec.aliases || [],
         encoding: spec.encoding || 'o200k_base',
         apiContextLimit,
@@ -302,7 +305,7 @@ export class ModelDetector {
     // Retains underlying model API context window for callers without plan context
     return {
       id: matchedId,
-      displayName: spec.displayName,
+      displayName,
       aliases: spec.aliases || [],
       encoding: spec.encoding || 'o200k_base',
       apiContextLimit,

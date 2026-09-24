@@ -278,7 +278,33 @@ export function runModelPlanLimitsTests() {
   // =========================================================================
   // 10. Refreshed & Versioned Config
   // =========================================================================
-  assert('Detector exposes active config version "2.0.0"', detector.getConfigVersion() === '2.0.0');
+  assert('Detector exposes active config version "2.1.0"', detector.getConfigVersion() === '2.1.0');
+
+  // =========================================================================
+  // 11. Current ChatGPT model families (pattern-matched slugs)
+  // =========================================================================
+  const instantPlus = detector.resolveModel('gpt-5-6-sol', 'plus');
+  assert('Unlisted gpt-5.x slug resolves to Instant family (Plus 54K)',
+    instantPlus.id === 'chatgpt-instant' && instantPlus.contextWindow === 54000 && instantPlus.limitStatus === 'VERIFIED');
+  assert('Family display name keeps the real slug', instantPlus.displayName === 'gpt-5-6-sol (Instant)');
+  assert('gpt-6 slug resolves to Instant family (Free 27K)', detector.resolveModel('gpt-6-astra', 'free').contextWindow === 27000);
+  assert('Thinking slug resolves to reasoning family (Pro 400K)',
+    detector.resolveModel('gpt-5-thinking', 'pro').contextWindow === 400000);
+  assert('Short "-t-" reasoning slug resolves to reasoning family (Plus 256K)',
+    detector.resolveModel('gpt-5-t-mini', 'plus').contextWindow === 256000);
+  assert('DOM header text "5.6 Thinking" resolves to reasoning family',
+    detector.resolveModel('5.6 Thinking', 'plus').id === 'chatgpt-reasoning');
+  assert('"gpt-5-6-terra" is not mistaken for the "t" reasoning marker',
+    detector.resolveModel('gpt-5-6-terra', 'plus').id === 'chatgpt-instant');
+  assert('Free reasoning limit is UNKNOWN (pricing page says "Varies")',
+    detector.resolveModel('gpt-5-thinking', 'free').contextWindow === null);
+  assert('Business limit is flagged UNVERIFIED (not on public pricing page)',
+    detector.resolveModel('gpt-5', 'business').limitStatus === 'UNVERIFIED');
+  assert('o3 no longer aliases to o3-mini', detector.resolveModel('o3', 'plus').id === 'chatgpt-reasoning');
+  assert('o3-mini still resolves exactly', detector.resolveModel('o3-mini', 'plus').id === 'o3-mini');
+  assert('gpt-4.1 no longer substring-matches legacy GPT-4 (8K)', detector.resolveModel('gpt-4.1', 'plus').id === 'chatgpt-instant');
+  assert('Substring match prefers longest key (gpt-4o-mini-2024 -> gpt-4o-mini)',
+    detector.resolveModel('gpt-4o-mini-2024-07-18', 'plus').id === 'gpt-4o-mini');
   assert('Detector exposes last updated date', Boolean(detector.getLastUpdated()));
 
   // Test refreshing with updated config

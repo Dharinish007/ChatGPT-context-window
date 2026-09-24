@@ -52,7 +52,7 @@ ChatGPT Web Page
 | :--- | :---: | :---: | :--- |
 | **Conversation Tokens** | ✅ Completed | `ESTIMATED` | High-precision local BPE tokenizer with LRU caching |
 | **Model Detection** | ✅ Completed | `OBSERVED` | Scans header, dropdowns, and message metadata |
-| **Context Window Limits** | ✅ Completed | `OBSERVED` | Verified OpenAI official specs in `model-limits.json` |
+| **Context Window Limits** | ✅ Completed | `OBSERVED` | Per model + plan in `model-limits.json`; current GPT-5.x/6 slugs matched to Instant / Thinking families from chatgpt.com/pricing |
 | **Streaming Responses** | ✅ Completed | `ESTIMATED` | Throttled re-tokenization of only active streaming turn |
 | **Image Attachments** | ✅ Completed | `ESTIMATED` | Calibrated vision token heuristic (~300 tokens/image) |
 | **Document Uploads** | ✅ Completed | `UNKNOWN` | Flagged as present; exact internal tokens marked unknown |
@@ -87,7 +87,7 @@ In compliance with project requirements, the following constraints are explicitl
 # 1. Install & build content script bundle and icons
 npm run build
 
-# 2. Run the automated test suite (49 unit and DOM tests)
+# 2. Run the automated test suite (unit, DOM, network-interceptor and bundle tests)
 npm test
 
 # 3. Run Manifest V3 pre-flight validation
@@ -107,6 +107,6 @@ npm run pack
    ```
 2. Enable **Developer mode** using the toggle switch in the top-right corner.
 3. Click the **Load unpacked** button in the top-left corner.
-4. Select this directory (`d:\Desktop\GPT Context`).
+4. Select this repository folder (the one containing `manifest.json`). Run `npm install && npm run build` first if you changed any source file.
 5. Open [chatgpt.com](https://chatgpt.com) and start or open any conversation.
 6. The context meter will appear in the top-right corner, and clicking the toolbar icon opens the detailed analytics dashboard.

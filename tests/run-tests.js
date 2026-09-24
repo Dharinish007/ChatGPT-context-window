@@ -11,6 +11,7 @@ import { runDomExtractorTests } from './dom/extractor.test.js';
 import { runEvidenceConfidenceTests } from './unit/evidence-confidence.test.js';
 import { runModelPlanLimitsTests } from './unit/model-plan-limits.test.js';
 import { runBundleIntegrityTests } from './unit/bundle-integrity.test.js';
+import { runInterceptorTests } from './unit/interceptor.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -73,6 +74,12 @@ console.log('');
 const r9 = runBundleIntegrityTests();
 totalPassed += r9.passed;
 totalFailed += r9.failed;
+console.log('');
+
+// 10. MAIN-world network interceptor tests
+const r10 = await runInterceptorTests();
+totalPassed += r10.passed;
+totalFailed += r10.failed;
 console.log('');
 
 const t1 = performance.now();

@@ -13,12 +13,77 @@
  */
 
 export class ConversationClient {
+  // Bearer token for same-origin /backend-api calls. Memory only: never stored, logged, or put in state.
+  #accessToken = null;
+
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || '';
     this.cache = new Map(); // conversationId -> { data, normalized, timestamp }
     this.cacheTtlMs = options.cacheTtlMs || 5000; // 5-second in-memory cache to prevent spamming
     this.activeFetches = new Map(); // conversationId -> Promise
     this.lastError = null;
+    this.session = null; // { ok, status, planType, fetchedAt } - safe to expose, holds no token
+    this._sessionPromise = null;
+  }
+
+  _origin() {
+    return (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : this.baseUrl;
+  }
+
+  /**
+   * Reads the logged-in session (GET /api/auth/session, cookie-authenticated).
+   * /backend-api rejects cookie-only requests, so its accessToken is required for the
+   * conversation endpoint; the same response also reports the account's plan type.
+   * @param {{ force?: boolean }} [opts]
+   * @returns {Promise<{ ok: boolean, status: number, planType: string|null, fetchedAt: number }>}
+   */
+  async getSession({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this.session) {
+      const ttl = this.session.ok ? 5 * 60 * 1000 : 60 * 1000; // Retry failures after a minute, not every mutation
+      if (now - this.session.fetchedAt < ttl) return this.session;
+    }
+    if (this._sessionPromise) return this._sessionPromise;
+
+    this._sessionPromise = (async () => {
+      try {
+        const res = await fetch(`${this._origin()}/api/auth/session`, {
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!res.ok) {
+          this.#accessToken = null;
+          this.session = { ok: false, status: res.status, planType: null, fetchedAt: now };
+        } else {
+          const data = await res.json();
+          this.#accessToken = typeof data?.accessToken === 'string' ? data.accessToken : null;
+          this.session = {
+            ok: Boolean(this.#accessToken),
+            status: res.status,
+            planType: data?.account?.planType || data?.account?.plan_type || null,
+            fetchedAt: now
+          };
+        }
+      } catch (err) {
+        this.session = { ok: false, status: 0, error: err.message, planType: null, fetchedAt: now };
+      } finally {
+        this._sessionPromise = null;
+      }
+      return this.session;
+    })();
+    return this._sessionPromise;
+  }
+
+  /**
+   * Headers ChatGPT's own client sends to /backend-api (auth + device id when available).
+   * @returns {Object}
+   */
+  _backendHeaders() {
+    const headers = { 'Accept': 'application/json' };
+    if (this.#accessToken) headers['Authorization'] = `Bearer ${this.#accessToken}`;
+    const didMatch = typeof document !== 'undefined' ? document.cookie.match(/(?:^|;\s*)oai-did=([^;]+)/) : null;
+    if (didMatch) headers['oai-device-id'] = decodeURIComponent(didMatch[1]);
+    return headers;
   }
 
   /**

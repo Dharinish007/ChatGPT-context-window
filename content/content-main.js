@@ -32,6 +32,7 @@ export class ContentScriptCoordinator {
     this.latestState = null;
     this.activeConversationId = null;
     this._streamRafId = null;
+    this._runSeq = 0; // Guards against older async passes overwriting newer state
 
     // Network Intelligence Observer (Group C)
     this.requestObserver = new RequestObserver({
@@ -101,7 +102,7 @@ export class ContentScriptCoordinator {
   async handleStreamComplete(meta = {}) {
     const convId = meta.conversationId || this.activeConversationId;
     if (convId) {
-      await this.conversationClient.fetchConversation(convId, { bypassCache: true });
+      await this.conversationClient.fetchConversation(convId, { force: true });
     }
     this.handleDOMChange({ isStreamComplete: true });
   }
@@ -142,6 +143,7 @@ export class ContentScriptCoordinator {
    * @param {Object} event 
    */
   async handleDOMChange(event = {}) {
+    const runSeq = ++this._runSeq;
     try {
       // 1. Identify active conversation ID from URL or Network, and handle navigation
       const conversationId = this.conversationClient.extractConversationId() || this.requestObserver.getActiveConversationId();
@@ -487,6 +489,9 @@ export class ContentScriptCoordinator {
       contextState.evidence = reconciled.evidence;
       contextState.conflicts = reconciled.conflicts;
 
+      // A newer pass started while this one awaited the API; its result wins
+      if (runSeq !== this._runSeq) return;
+
       this.latestState = contextState;
 
       // 10. Update in-page floating HUD
@@ -501,26 +506,17 @@ export class ContentScriptCoordinator {
   }
 
   /**
-   * Syncs context state to chrome.storage.session and notifies service worker.
+   * Sends the full context state to the service worker (badge + per-tab popup cache).
    * @param {Object} state 
    */
   syncState(state) {
-    if (typeof chrome === 'undefined' || !chrome.storage) return;
+    if (typeof chrome === 'undefined') return;
 
-    // Persist to session storage for instant action popup display
-    try {
-      chrome.storage.session.set({ latestContextState: state }).catch(() => {});
-    } catch (_) {}
-
-    // Send message to service worker to update action badge
+    // Send full state: the service worker caches it per tab and the popup renders from it
     if (chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({
         type: 'CONTEXT_UPDATED',
-        payload: {
-          utilization: state.utilization,
-          model: state.model,
-          tokens: state.tokens
-        }
+        payload: state
       }).catch(() => {
         // Suppress errors when service worker is temporarily inactive
       });

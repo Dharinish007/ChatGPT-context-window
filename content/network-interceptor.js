@@ -54,6 +54,12 @@
     return url.includes('/backend-api/');
   }
 
+  // Prompt submission / SSE stream endpoint (newer builds use /backend-api/f/conversation).
+  // Exact match so sibling POSTs like /conversation/gen_title/{id} are not parsed as streams.
+  const CONVERSATION_POST_RE = /^\/backend-api\/(?:f\/)?conversation\/?$/;
+  // Conversation tree retrieval: /backend-api/conversation/{uuid}
+  const CONVERSATION_GET_RE = /^\/backend-api\/conversation\/[0-9a-f-]{8,}\/?$/i;
+
   /**
    * Extracts clean path from full URL for logging/unsupported endpoint tracking.
    * @param {string} fullUrl 
@@ -141,6 +147,7 @@
     let lastParts = [];
     let detectedTools = [];
     let lastDispatchTime = 0;
+    let lastDeltaPath = null; // Delta v1 omits "p"/"o" on consecutive appends to the same path
     const DISPATCH_THROTTLE_MS = 50;
 
     dispatchNetworkEvent('STREAM_STARTED', {
@@ -171,6 +178,20 @@
           if (line.startsWith('data:')) {
             const dataStr = line.slice(5).trim();
             if (dataStr === '[DONE]') {
+              // Flush text the throttle held back so the final chunk is never lost
+              if (accumulatedText) {
+                dispatchNetworkEvent('STREAM_CHUNK', {
+                  streamId,
+                  conversationId: meta.conversationId,
+                  messageId: currentMessageId,
+                  role: 'assistant',
+                  text: accumulatedText,
+                  status: 'finished_successfully',
+                  modelSlug: currentModelSlug,
+                  tools: detectedTools,
+                  timestamp: Date.now()
+                });
+              }
               dispatchNetworkEvent('GENERATION_DONE', {
                 streamId,
                 conversationId: meta.conversationId,
@@ -183,7 +204,14 @@
             }
 
             try {
-              const payload = JSON.parse(dataStr);
+              let payload = JSON.parse(dataStr);
+
+              // Delta v1 wraps a new message as {"o":"add","v":{"message":...}}; unwrap to the classic shape
+              if (payload && payload.o === 'add' && payload.v && typeof payload.v === 'object' && payload.v.message) {
+                payload = payload.v;
+                accumulatedText = '';
+                lastDeltaPath = null;
+              }
 
               // 1. Capture conversation_id if assigned mid-stream
               if (payload.conversation_id && !meta.conversationId) {
@@ -255,10 +283,21 @@
               }
 
               // 3. Handle JSON Patch / Delta formats if present
-              if (payload.v !== undefined && (payload.p || payload.o)) {
-                // Delta format observed
-                if (typeof payload.v === 'string') {
-                  accumulatedText += payload.v;
+              // Delta v1: {"p":path,"o":"append","v":"..."}, bare {"v":"..."} continuing the last path,
+              // or {"o":"patch","v":[ops]}. Only appends to message content parts are text.
+              if (payload.v !== undefined && !payload.message) {
+                const ops = (payload.o === 'patch' && Array.isArray(payload.v)) ? payload.v : [payload];
+                let appended = false;
+                for (const op of ops) {
+                  if (!op || typeof op.v !== 'string') continue;
+                  if (typeof op.p === 'string') lastDeltaPath = op.p;
+                  const isContentPath = lastDeltaPath === null || lastDeltaPath.startsWith('/message/content/parts');
+                  if (isContentPath && (!op.o || op.o === 'append')) {
+                    accumulatedText += op.v;
+                    appended = true;
+                  }
+                }
+                if (appended) {
                   const now = Date.now();
                   if (now - lastDispatchTime >= DISPATCH_THROTTLE_MS) {
                     lastDispatchTime = now;
@@ -353,7 +392,7 @@
         model: null
       };
 
-      if (url.includes('/backend-api/conversation') && method === 'POST') {
+      if (CONVERSATION_POST_RE.test(endpoint) && method === 'POST') {
         try {
           let bodyStr = null;
           if (typeof init.body === 'string') {
@@ -368,7 +407,8 @@
           if (bodyStr) {
             const bodyObj = JSON.parse(bodyStr);
             requestMeta.conversationId = bodyObj.conversation_id || null;
-            requestMeta.model = bodyObj.model || null;
+            // "auto" is a router hint, not a model; the real slug arrives in the stream metadata
+            requestMeta.model = (bodyObj.model && bodyObj.model !== 'auto') ? bodyObj.model : null;
 
             const userMessage = extractUserMessageFromPayload(bodyObj);
             dispatchNetworkEvent('CONVERSATION_REQUEST', {
@@ -411,7 +451,7 @@
         }
 
         // Handle streaming response: POST /backend-api/conversation
-        if (url.includes('/backend-api/conversation') && method === 'POST') {
+        if (CONVERSATION_POST_RE.test(endpoint) && method === 'POST') {
           if (response.body && !response.bodyUsed) {
             try {
               const cloned = response.clone();
@@ -428,7 +468,7 @@
         }
 
         // Handle conversation retrieval: GET /backend-api/conversation/{id}
-        else if (url.includes('/backend-api/conversation/') && method === 'GET') {
+        else if (CONVERSATION_GET_RE.test(endpoint) && method === 'GET') {
           if (response.status === 200 && response.body && !response.bodyUsed) {
             try {
               const cloned = response.clone();
@@ -439,7 +479,7 @@
                     endpoint,
                     conversationId: data.conversation_id || null,
                     title: safeString(data.title, 100),
-                    modelSlug: safeString(data.model_slug, 50),
+                    modelSlug: safeString(data.default_model_slug || data.model_slug, 50),
                     mappingNodesCount: data.mapping ? Object.keys(data.mapping).length : 0,
                     timestamp: Date.now()
                   });
@@ -470,7 +510,7 @@
         }
 
         // Handle account & plan observation: GET /backend-api/accounts/check or /backend-api/me
-        else if ((url.includes('/backend-api/accounts/check') || url.includes('/backend-api/me')) && method === 'GET') {
+        else if ((endpoint.startsWith('/backend-api/accounts/check') || endpoint === '/backend-api/me') && method === 'GET') {
           if (response.status === 200 && response.body && !response.bodyUsed) {
             try {
               const cloned = response.clone();
@@ -480,7 +520,8 @@
                   let planType = null;
                   if (data.accounts) {
                     const def = data.accounts.default || (Array.isArray(data.accounts) ? data.accounts[0] : Object.values(data.accounts)[0]);
-                    planType = def?.plan_type || def?.structure || data.plan_type;
+                    // accounts/check nests the tier under .account; "structure" is personal/workspace, not a plan
+                    planType = def?.account?.plan_type || def?.plan_type || data.plan_type;
                   } else {
                     planType = data.account_plan?.plan_type || data.plan_type;
                   }

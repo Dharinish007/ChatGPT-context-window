@@ -15,6 +15,7 @@ export { EvidenceType };
 
 export const SourcePriority = Object.freeze({
   conversation_api: 4,
+  session_api: 4,
   authoritative_api: 4,
   authoritative: 4,
   network: 3,
