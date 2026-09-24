@@ -228,6 +228,22 @@ export function runDomExtractorTests() {
   assert('Strips UI buttons ("Edit", "Copy") from turn text', !messages[0].text.includes('Edit') && !messages[1].text.includes('Copy'));
   assert('Preserves preformatted code block in assistant turn', messages[1].text.includes('def fib(n): return n'));
 
+  // 2b. Newer markup: a stray empty <article> plus <section> turns used to yield 0 messages
+  const modern = new MockElement('root');
+  modern.appendChild(new MockElement('article', { class: 'sidebar-card' }));
+  const mMain = modern.appendChild(new MockElement('main'));
+  const s1 = mMain.appendChild(new MockElement('section', { 'data-testid': 'conversation-turn-1', 'data-turn': 'user' }));
+  const u1 = s1.appendChild(new MockElement('div', { 'data-message-author-role': 'user', 'data-message-id': 'msg-u1' }));
+  u1.appendChild(new MockElement('div', { class: 'whitespace-pre-wrap' }, 'Explain entropy'));
+  const s2 = mMain.appendChild(new MockElement('section', { 'data-testid': 'conversation-turn-2', 'data-turn': 'assistant' }));
+  const a1 = s2.appendChild(new MockElement('div', { 'data-message-author-role': 'assistant', 'data-message-id': 'msg-a1', 'data-message-model-slug': 'gpt-5-5' }));
+  a1.appendChild(new MockElement('div', { class: 'markdown' }, 'Entropy measures disorder.'));
+  const modernMsgs = extractor.extractMessages(modern);
+  assert('Stray empty <article> no longer hides <section> turns (2 messages found)', modernMsgs.length === 2);
+  assert('Roles read from message nodes in newer markup', modernMsgs[0]?.role === 'user' && modernMsgs[1]?.role === 'assistant');
+  assert('Message ids come from data-message-id', modernMsgs[0]?.id === 'msg-u1' && modernMsgs[1]?.id === 'msg-a1');
+  assert('Assistant model slug read from data-message-model-slug', modernMsgs[1]?.modelSlug === 'gpt-5-5');
+
   // 3. Attachment Detection Test
   const attachmentDetector = new AttachmentDetector();
   const attachments = attachmentDetector.detect(mockRoot);

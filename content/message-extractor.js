@@ -66,6 +66,12 @@ export class MessageExtractor {
       return directRole;
     }
 
+    // Newer turn containers carry data-turn="user|assistant"
+    const turnAttr = turnEl.getAttribute('data-turn');
+    if (turnAttr === 'user' || turnAttr === 'assistant') {
+      return turnAttr;
+    }
+
     // 2. Check inner elements with author role
     const innerRoleEl = turnEl.querySelector('[data-message-author-role]');
     if (innerRoleEl) {
@@ -93,30 +99,40 @@ export class MessageExtractor {
    * @returns {Array<{ id: string, role: 'user' | 'assistant', text: string, isStreaming: boolean }>}
    */
   extractMessages(root = document) {
-    const messages = [];
-
-    // Query conversation turn articles using cascading selectors
-    const turnSelectors = [
-      "article[data-testid^='conversation-turn-']",
+    // ChatGPT's markup changes often, so run every strategy and keep the one that yields the most
+    // non-empty messages. Stopping at the first selector that matches anything (e.g. a stray
+    // <article>) is what produced "0 messages" on live pages.
+    const strategies = [
+      // Per-message nodes: the most stable anchor across ChatGPT builds
+      "[data-message-author-role='user'], [data-message-author-role='assistant']",
+      // Turn containers (<article> in older builds, <section> in newer ones)
+      "[data-testid^='conversation-turn-']",
       "article",
-      "div[data-message-author-role]",
       ".conversation-turn"
     ];
 
-    let turnElements = [];
-    for (let i = 0; i < turnSelectors.length; i++) {
-      const found = root.querySelectorAll(turnSelectors[i]);
-      if (found && found.length > 0) {
-        turnElements = Array.from(found);
-        break;
-      }
+    let best = [];
+    for (const selector of strategies) {
+      const found = this._extractWith(root, selector);
+      if (found.length > best.length) best = found;
     }
+    return best;
+  }
 
-    // If turn elements are nested articles, keep only top-level turns
+  /**
+   * Extracts messages using one selector strategy.
+   * @private
+   */
+  _extractWith(root, selector) {
+    const messages = [];
+    const turnElements = Array.from(root.querySelectorAll(selector) || []);
+    const matched = new Set(turnElements);
+
+    // Keep only top-level matches (a turn container can wrap a message node)
     const topTurns = turnElements.filter(el => {
       let parent = el.parentElement;
       while (parent && parent !== root) {
-        if (turnElements.includes(parent)) return false;
+        if (matched.has(parent)) return false;
         parent = parent.parentElement;
       }
       return true;
@@ -135,10 +151,15 @@ export class MessageExtractor {
       const text = this.cleanElementText(contentEl);
       if (!text) continue;
 
-      // Extract or generate a deterministic ID
-      const turnId = turnEl.getAttribute('data-testid') ||
+      // Prefer ChatGPT's message id so DOM turns line up with API / network turns
+      const idEl = turnEl.getAttribute('data-message-id') ? turnEl : turnEl.querySelector("[data-message-id]");
+      const turnId = idEl?.getAttribute('data-message-id') ||
+                     turnEl.getAttribute('data-testid') ||
                      turnEl.getAttribute('id') ||
                      `turn-${i}-${role}`;
+
+      const slugEl = turnEl.getAttribute('data-message-model-slug') ? turnEl : turnEl.querySelector("[data-message-model-slug]");
+      const modelSlug = slugEl?.getAttribute('data-message-model-slug') || null;
 
       const isStreaming = turnEl.classList.contains('result-streaming') ||
                           Boolean(turnEl.querySelector('.result-streaming'));
@@ -162,6 +183,7 @@ export class MessageExtractor {
         role,
         text,
         parts,
+        modelSlug: role === 'assistant' ? modelSlug : null,
         isStreaming
       });
     }

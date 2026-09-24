@@ -30,7 +30,15 @@
    * @param {string} eventType 
    * @param {Object} payload 
    */
+  // Latest event per sticky type. This script runs at document_start but the isolated listener
+  // only at document_idle, so early events (plan, first conversation load) would otherwise be lost.
+  const STICKY_EVENTS = new Set(['ACCOUNT_PLAN_OBSERVED', 'CONVERSATION_LOADED', 'MODELS_OBSERVED']);
+  const stickyCache = new Map();
+
   function dispatchNetworkEvent(eventType, payload = {}) {
+    if (STICKY_EVENTS.has(eventType)) {
+      stickyCache.set(eventType, payload);
+    }
     try {
       window.postMessage({
         source: BRIDGE_SOURCE,
@@ -477,10 +485,12 @@
                   const data = JSON.parse(text);
                   dispatchNetworkEvent('CONVERSATION_LOADED', {
                     endpoint,
-                    conversationId: data.conversation_id || null,
+                    conversationId: data.conversation_id || (endpoint.match(/conversation\/([0-9a-f-]{8,})/i) || [])[1] || null,
                     title: safeString(data.title, 100),
                     modelSlug: safeString(data.default_model_slug || data.model_slug, 50),
                     mappingNodesCount: data.mapping ? Object.keys(data.mapping).length : 0,
+                    // Full tree the page already downloaded: authoritative data with no extra request or token
+                    data: data.mapping ? data : null,
                     timestamp: Date.now()
                   });
                 } catch (_) {}
@@ -632,6 +642,10 @@
         features: ['fetch', 'xhr', 'sse'],
         timestamp: Date.now()
       });
+      // Replay what happened before the listener existed
+      for (const [eventType, payload] of stickyCache) {
+        dispatchNetworkEvent(eventType, payload);
+      }
     }
   });
 

@@ -1,9 +1,67 @@
 /**
- * ChatGPT Context Monitor - In-Page Overlay HUD
- * 
- * Injects a sleek, non-intrusive context meter directly into ChatGPT Web.
- * Uses Shadow DOM to guarantee zero CSS style pollution with ChatGPT's interface.
+ * ChatGPT Context Monitor - In-Page Status Bar
+ *
+ * A persistent one-line context status bar (in the spirit of Claude Code / Codex:
+ * "12.4K / 54K · 23% · 77% left") docked above ChatGPT's composer (bottom-right fallback).
+ * - Built once, then updated in place (textContent only): no flicker, no lost hover/expand
+ *   state, and page-derived strings can never inject HTML.
+ * - Click to expand an upward details panel; it never hides itself.
+ * - Shadow DOM keeps ChatGPT's CSS out and ours in.
  */
+
+const STYLES = `
+  :host { all: initial; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  .wrap {
+    --bg: rgba(24, 24, 27, 0.96); --fg: #e4e4e7; --muted: #a1a1aa; --line: rgba(255,255,255,0.10);
+    --track: rgba(255,255,255,0.10); --ok: #10a37f; --warn: #f59e0b; --bad: #ef4444; --unk: #71717a;
+    font: 12px/1.4 ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+    color: var(--fg);
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  }
+  .wrap.light {
+    --bg: rgba(255, 255, 255, 0.97); --fg: #18181b; --muted: #52525b; --line: rgba(0,0,0,0.10);
+    --track: rgba(0,0,0,0.08); --unk: #a1a1aa;
+  }
+  .bar, .panel {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  .bar {
+    display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    cursor: pointer; color: inherit; font: inherit; text-align: left;
+    white-space: nowrap; max-width: calc(100vw - 32px);
+  }
+  .bar:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--unk); flex: none; }
+  .meter { display: block; width: 64px; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; flex: none; }
+  .fill { display: block; height: 100%; width: 0; background: var(--ok); transition: width .25s ease; }
+  .tokens { font-weight: 600; }
+  .muted { color: var(--muted); }
+  .sep { color: var(--line); }
+  .model { overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+  .chev { color: var(--muted); font-size: 10px; }
+
+  .panel { width: 360px; max-width: calc(100vw - 32px); max-height: var(--panel-max, 60vh); overflow: auto; padding: 12px; display: none; }
+  .panel.open { display: block; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+  .row .k { color: var(--muted); white-space: nowrap; }
+  .row .v { text-align: right; overflow-wrap: anywhere; }
+  .tag { font-size: 10px; padding: 0 4px; border-radius: 3px; margin-left: 6px; border: 1px solid var(--line); color: var(--muted); }
+  .h { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
+  .notes { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+  .notes .pos { color: var(--ok); }
+  .notes .neg { color: var(--warn); }
+  .warn { color: var(--warn); font-size: 11px; margin-top: 6px; }
+  .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 8px; }
+  .btn {
+    font: inherit; font-size: 11px; color: var(--fg); background: transparent;
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .fine { color: var(--muted); font-size: 10px; }
+`;
 
 export class OverlayUI {
   constructor() {
@@ -12,438 +70,231 @@ export class OverlayUI {
     this.isExpanded = false;
     this.isVisible = true;
     this.latestState = null;
+    this.el = {};
   }
 
-  /**
-   * Mounts the overlay HUD into the document.
-   */
   mount() {
-    if (document.getElementById('chatgpt-context-monitor-host')) {
-      return;
-    }
+    if (this.hostElement || typeof document === 'undefined') return;
+    const existing = document.getElementById('chatgpt-context-monitor-host');
+    if (existing) existing.remove();
 
     this.hostElement = document.createElement('div');
     this.hostElement.id = 'chatgpt-context-monitor-host';
-    this.hostElement.style.cssText = `
-      position: fixed;
-      top: 14px;
-      right: 18px;
-      z-index: 99999;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      user-select: none;
-    `;
-
+    this.hostElement.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;';
     this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
+
+    const style = document.createElement('style');
+    style.textContent = STYLES;
+    this.shadowRoot.appendChild(style);
+
+    const make = (tag, cls, parent, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text) n.textContent = text;
+      if (parent) parent.appendChild(n);
+      return n;
+    };
+
+    const wrap = make('div', 'wrap', this.shadowRoot);
+
+    // Details panel (opens upward, above the bar)
+    const panel = make('div', 'panel', wrap);
+    panel.id = 'cm-panel';
+    const rows = {};
+    const addRow = (key, label) => {
+      const r = make('div', 'row', panel);
+      make('span', 'k', r, label);
+      rows[key] = make('span', 'v', r);
+    };
+    make('div', 'h', panel, 'Context');
+    addRow('used', 'Used');
+    addRow('limit', 'Window');
+    addRow('left', 'Remaining');
+    make('div', 'h', panel, 'Breakdown');
+    addRow('user', 'You');
+    addRow('assistant', 'ChatGPT + tools');
+    addRow('attachments', 'Attachments');
+    addRow('hidden', 'System prompt / memory');
+    make('div', 'h', panel, 'Detected');
+    addRow('model', 'Model');
+    addRow('plan', 'Plan');
+    addRow('source', 'Conversation source');
+    addRow('turns', 'Turns');
+    make('div', 'h', panel, 'Confidence');
+    const notes = make('div', 'notes', panel);
+    const warn = make('div', 'warn', panel);
+    const actions = make('div', 'actions', panel);
+    const copyBtn = make('button', 'btn', actions, 'Copy diagnostics');
+    make('span', 'fine', actions, 'Visible text only; hidden context is not counted');
+
+    // The always-visible bar
+    const bar = make('button', 'bar', wrap);
+    bar.setAttribute('aria-controls', 'cm-panel');
+    bar.setAttribute('aria-expanded', 'false');
+    const dot = make('span', 'dot', bar);
+    const tokens = make('span', 'tokens', bar, 'reading conversation…');
+    const meterEl = make('span', 'meter', bar);
+    const fill = make('span', 'fill', meterEl);
+    const pct = make('span', 'muted', bar);
+    make('span', 'sep', bar, '│');
+    const model = make('span', 'model', bar);
+    const chev = make('span', 'chev', bar, '▲');
+
+    bar.addEventListener('click', () => {
+      this.isExpanded = !this.isExpanded;
+      this._applyExpanded();
+    });
+    copyBtn.addEventListener('click', async () => {
+      const text = JSON.stringify(this.latestState?.diagnostics || { note: 'no state yet' }, null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = 'Copied ✓';
+      } catch (_) {
+        copyBtn.textContent = 'Copy failed';
+      }
+      setTimeout(() => { copyBtn.textContent = 'Copy diagnostics'; }, 1500);
+    });
+
+    this.el = { wrap, panel, rows, notes, warn, bar, dot, tokens, meterEl, fill, pct, model, chev };
+    (document.body || document.documentElement).appendChild(this.hostElement);
+    window.addEventListener('resize', () => this._position());
     this.render();
-    document.body.appendChild(this.hostElement);
   }
 
   /**
-   * Updates the HUD with newly computed context state.
-   * @param {Object} state 
+   * Docks the bar right-aligned just above ChatGPT's composer (like Codex's context indicator),
+   * so it never covers the input. Falls back to the bottom-right corner if no composer is found.
    */
+  _position() {
+    if (!this.hostElement) return;
+    const input = document.querySelector('#prompt-textarea');
+    const composer = input && (input.closest('form') || input.parentElement);
+    const r = composer && composer.getBoundingClientRect();
+    let right = 16;
+    let bottom = 16;
+    if (r && r.width > 200 && r.top > 120) {
+      right = Math.max(8, Math.round(window.innerWidth - r.right));
+      bottom = Math.max(8, Math.round(window.innerHeight - r.top + 6));
+    }
+    this.hostElement.style.right = `${right}px`;
+    this.hostElement.style.bottom = `${bottom}px`;
+    // Keep the upward panel inside the viewport
+    this.el.wrap?.style.setProperty('--panel-max', `${Math.max(160, window.innerHeight - bottom - 60)}px`);
+  }
+
   update(state) {
     this.latestState = state;
-    if (!this.shadowRoot) {
-      this.mount();
+    if (!this.hostElement) this.mount();
+    // SPA re-renders can drop our node; re-attach instead of rebuilding
+    if (this.hostElement && !this.hostElement.isConnected) {
+      (document.body || document.documentElement).appendChild(this.hostElement);
     }
     this.render();
   }
 
-  /**
-   * Renders the Shadow DOM content.
-   */
-  render() {
-    if (!this.shadowRoot) return;
-
-    if (!this.isVisible) {
-      this.shadowRoot.innerHTML = `
-        <style>
-          .reopen-pill {
-            background: #1e1e24;
-            color: #10a37f;
-            border: 1px solid #333;
-            border-radius: 20px;
-            padding: 6px 12px;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-          }
-          .reopen-pill:hover {
-            background: #2a2a34;
-          }
-        </style>
-        <button class="reopen-pill" id="reopen-btn">
-          <span>📊 Context</span>
-        </button>
-      `;
-      this.shadowRoot.getElementById('reopen-btn')?.addEventListener('click', () => {
-        this.isVisible = true;
-        this.render();
-      });
-      return;
-    }
-
-    const state = this.latestState;
-    const planTier = state?.model?.planTier || state?.plan?.tier;
-    const planSuffix = (planTier && planTier !== 'unknown') ? ` [${planTier.toUpperCase()}]` : '';
-    const rawModelName = state?.model?.displayName || 'Detecting...';
-    const modelName = `${rawModelName}${planSuffix}`;
-    const totalTokensFormatted = state?.tokens?.formatted?.total || '0';
-    const limitFormatted = state?.tokens?.formatted?.contextWindow || 'Unknown';
-    const percent = state?.utilization?.percentage !== null && state?.utilization?.percentage !== undefined
-      ? state.utilization.percentage
-      : 0;
-    const percentStr = state?.utilization?.formatted || '0%';
-    const accuracy = state?.accuracy?.total || 'ESTIMATED';
-    const confidence = state?.confidence?.level || 'MEDIUM';
-    const confidencePercent = state?.confidence?.percentage !== undefined
-      ? state.confidence.percentage
-      : Math.round((state?.confidence?.score || 0.5) * 100);
-    const isLowerBound = Boolean(state?.completeness?.domIsPartial || state?.confidence?.serverContextCompleteness?.isLowerBound);
-    const groundTruthSource = state?.evidence?.turns?.source || state?.evidence?.dataSource?.source || state?.observables?.dataSource || 'dom';
-    const groundTruthLabel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative' || groundTruthSource === 'authoritative_api')
-      ? 'Authoritative API'
-      : (groundTruthSource === 'network' ? 'Network Stream' : 'DOM Extraction');
-    const evidenceLevel = (groundTruthSource === 'conversation_api' || groundTruthSource === 'authoritative') ? 'EXACT' : 'OBSERVED';
-    const factors = state?.confidence?.factors || [];
-
-    // Progress bar color based on utilization
-    let barColor = '#10a37f'; // OpenAI green
-    if (percent > 85) {
-      barColor = '#ef4444'; // Red alert
-    } else if (percent > 65) {
-      barColor = '#f59e0b'; // Amber warning
-    }
-
-    const confidenceBadgeColor = confidence === 'HIGH' ? '#10a37f' : confidence === 'MEDIUM' ? '#f59e0b' : '#6b7280';
-
-    this.shadowRoot.innerHTML = `
-      <style>
-        * {
-          box-sizing: border-box;
-          margin: 0;
-          padding: 0;
-        }
-        .hud-container {
-          background: rgba(26, 27, 30, 0.95);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-          color: #e5e7eb;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 12px;
-          box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
-          overflow: hidden;
-          transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-          width: ${this.isExpanded ? '320px' : 'auto'};
-        }
-        .hud-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 8px 12px;
-          gap: 10px;
-          cursor: pointer;
-        }
-        .hud-title-area {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .model-tag {
-          background: rgba(16, 163, 127, 0.15);
-          color: #10a37f;
-          padding: 2px 7px;
-          border-radius: 6px;
-          font-size: 11px;
-          font-weight: 600;
-          max-width: 110px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .metric-text {
-          font-size: 13px;
-          font-weight: 600;
-          color: #f3f4f6;
-          letter-spacing: -0.01em;
-        }
-        .percent-badge {
-          background: rgba(255, 255, 255, 0.08);
-          color: #d1d5db;
-          padding: 2px 6px;
-          border-radius: 4px;
-          font-size: 11px;
-          font-weight: 700;
-        }
-        .controls {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-        }
-        .icon-btn {
-          background: transparent;
-          border: none;
-          color: #9ca3af;
-          font-size: 13px;
-          cursor: pointer;
-          border-radius: 4px;
-          padding: 2px 4px;
-          line-height: 1;
-        }
-        .icon-btn:hover {
-          color: #ffffff;
-          background: rgba(255, 255, 255, 0.1);
-        }
-        .progress-bar-bg {
-          height: 3px;
-          width: 100%;
-          background: rgba(255, 255, 255, 0.08);
-        }
-        .progress-bar-fill {
-          height: 100%;
-          width: ${Math.min(100, percent)}%;
-          background: ${barColor};
-          transition: width 0.3s ease;
-        }
-        /* Expanded Popover */
-        .popover-body {
-          padding: 12px;
-          border-top: 1px solid rgba(255, 255, 255, 0.08);
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          font-size: 12px;
-        }
-        .section-title {
-          font-size: 10px;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          color: #9ca3af;
-          margin-bottom: 4px;
-        }
-        .lower-bound-banner {
-          background: rgba(245, 158, 11, 0.15);
-          border: 1px solid rgba(245, 158, 11, 0.35);
-          border-radius: 6px;
-          padding: 6px 8px;
-          font-size: 11px;
-          color: #fbbf24;
-          display: flex;
-          gap: 6px;
-          align-items: center;
-          line-height: 1.3;
-        }
-        .provenance-box {
-          background: rgba(255, 255, 255, 0.04);
-          padding: 7px 9px;
-          border-radius: 6px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          font-size: 11px;
-        }
-        .breakdown-row {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 3px 0;
-          color: #d1d5db;
-        }
-        .breakdown-val {
-          font-weight: 600;
-          color: #f3f4f6;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .accuracy-pill {
-          font-size: 9px;
-          padding: 1px 4px;
-          border-radius: 3px;
-          font-weight: 700;
-          background: rgba(255, 255, 255, 0.1);
-          color: #9ca3af;
-        }
-        .accuracy-pill.exact {
-          color: #10b981;
-          background: rgba(16, 185, 129, 0.15);
-        }
-        .accuracy-pill.observed {
-          color: #60a5fa;
-          background: rgba(96, 165, 250, 0.15);
-        }
-        .accuracy-pill.estimated {
-          color: #f59e0b;
-          background: rgba(245, 158, 11, 0.15);
-        }
-        .accuracy-pill.unknown {
-          color: #9ca3af;
-          background: rgba(156, 163, 175, 0.15);
-        }
-        .confidence-box {
-          background: rgba(255, 255, 255, 0.04);
-          padding: 8px 10px;
-          border-radius: 6px;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .confidence-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-        .confidence-label {
-          color: #9ca3af;
-          font-size: 11px;
-        }
-        .confidence-value {
-          font-weight: 700;
-          font-size: 11px;
-          color: ${confidenceBadgeColor};
-        }
-        .confidence-factors {
-          display: flex;
-          flex-direction: column;
-          gap: 3px;
-          border-top: 1px solid rgba(255, 255, 255, 0.06);
-          padding-top: 6px;
-        }
-        .factor-row {
-          font-size: 10px;
-          line-height: 1.35;
-          display: flex;
-          gap: 4px;
-        }
-        .factor-row.positive {
-          color: #34d399;
-        }
-        .factor-row.negative {
-          color: #f87171;
-        }
-        .limitations-note {
-          font-size: 10px;
-          color: #6b7280;
-          line-height: 1.3;
-          border-top: 1px dashed rgba(255, 255, 255, 0.08);
-          padding-top: 6px;
-        }
-      </style>
-
-      <div class="hud-container">
-        <div class="hud-header" id="hud-toggle">
-          <div class="hud-title-area">
-            <span class="model-tag" title="${modelName}">${modelName}</span>
-            <span class="metric-text">~${totalTokensFormatted} / ${limitFormatted}</span>
-            <span class="percent-badge">${percentStr}</span>
-          </div>
-          <div class="controls">
-            <button class="icon-btn" id="expand-btn" title="${this.isExpanded ? 'Collapse' : 'Expand breakdown'}">
-              ${this.isExpanded ? '▲' : '▼'}
-            </button>
-            <button class="icon-btn" id="close-btn" title="Minimize">✕</button>
-          </div>
-        </div>
-
-        <div class="progress-bar-bg">
-          <div class="progress-bar-fill"></div>
-        </div>
-
-        ${this.isExpanded ? `
-          <div class="popover-body">
-            ${isLowerBound ? `
-              <div class="lower-bound-banner">
-                <span>⚠️</span>
-                <span>Context count is a <strong>lower bound</strong> (older turns virtualized in DOM).</span>
-              </div>
-            ` : ''}
-
-            <div class="provenance-box">
-              <span style="color: #9ca3af;">Primary Source:</span>
-              <span style="font-weight: 600;">${groundTruthLabel} <span class="accuracy-pill ${evidenceLevel.toLowerCase()}">${evidenceLevel}</span></span>
-            </div>
-
-            <div>
-              <div class="section-title">Context Breakdown</div>
-              <div class="breakdown-row">
-                <span>User Turns</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.user || '0'} <span class="accuracy-pill ${state?.evidence?.tokens?.user?.evidenceType?.toLowerCase() || 'estimated'}">${state?.evidence?.tokens?.user?.evidenceType || 'EST'}</span></span>
-              </div>
-              <div class="breakdown-row">
-                <span>Assistant Turns</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.assistant || '0'} <span class="accuracy-pill ${state?.evidence?.tokens?.assistant?.evidenceType?.toLowerCase() || 'estimated'}">${state?.evidence?.tokens?.assistant?.evidenceType || 'EST'}</span></span>
-              </div>
-              <div class="breakdown-row">
-                <span>Attachments</span>
-                <span class="breakdown-val">${state?.tokens?.formatted?.attachments || '0'} <span class="accuracy-pill ${state?.accuracy?.attachments === 'ESTIMATED' ? 'estimated' : (state?.accuracy?.attachments === 'EXACT' ? 'exact' : 'unknown')}">${state?.accuracy?.attachments || 'UNK'}</span></span>
-              </div>
-              <div class="breakdown-row">
-                <span>Memory Retrieval</span>
-                <span class="breakdown-val">Server-side <span class="accuracy-pill unknown">UNK</span></span>
-              </div>
-              <div class="breakdown-row">
-                <span>Tools / MCP / Search</span>
-                <span class="breakdown-val">${state?.observables?.toolsObserved ? 'Observed' : 'None'} <span class="accuracy-pill ${state?.observables?.toolsObserved ? 'unknown' : 'observed'}">${state?.observables?.toolsObserved ? 'UNK' : 'OBS'}</span></span>
-              </div>
-              <div class="breakdown-row">
-                <span>Hidden System Context</span>
-                <span class="breakdown-val">Not Exposed <span class="accuracy-pill unknown">UNK</span></span>
-              </div>
-            </div>
-
-            <div class="confidence-box">
-              <div class="confidence-header">
-                <span class="confidence-label">Measurement Confidence:</span>
-                <span class="confidence-value">${confidencePercent}% (${confidence})</span>
-              </div>
-              ${factors.length > 0 ? `
-                <div class="confidence-factors">
-                  ${factors.map(f => `
-                    <div class="factor-row ${f.type}">
-                      <span>${f.type === 'positive' ? '+' : '−'}</span>
-                      <span>${f.text}</span>
-                    </div>
-                  `).join('')}
-                </div>
-              ` : ''}
-            </div>
-
-            <div class="limitations-note">
-              <strong>Truth-in-Measurement:</strong> Confidence reflects visible token measurement accuracy (${confidencePercent}%). Unobservable server prompts, internal tool schemas, and memory vector overhead remain classified as UNKNOWN.
-            </div>
-          </div>
-        ` : ''}
-      </div>
-    `;
-
-    // Event handlers
-    this.shadowRoot.getElementById('hud-toggle')?.addEventListener('click', (e) => {
-      // Don't toggle if clicking close button
-      if (e.target.id === 'close-btn') return;
-      this.isExpanded = !this.isExpanded;
-      this.render();
-    });
-
-    this.shadowRoot.getElementById('close-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.isVisible = false;
-      this.render();
-    });
+  _applyExpanded() {
+    const { panel, bar, chev } = this.el;
+    if (!panel) return;
+    panel.classList.toggle('open', this.isExpanded);
+    bar.setAttribute('aria-expanded', String(this.isExpanded));
+    chev.textContent = this.isExpanded ? '▼' : '▲';
   }
 
-  /**
-   * Unmounts HUD from DOM.
-   */
+  render() {
+    if (!this.hostElement) return;
+    this.hostElement.style.display = this.isVisible ? '' : 'none';
+    const { wrap, rows, notes, warn, dot, tokens, meterEl, fill, pct, model } = this.el;
+    if (!wrap) return;
+
+    // Follow ChatGPT's theme
+    const light = !document.documentElement.classList.contains('dark') &&
+      !(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches && !document.documentElement.classList.contains('light'));
+    wrap.classList.toggle('light', light);
+
+    this._applyExpanded();
+    this._position();
+
+    const s = this.latestState;
+    if (!s) return;
+
+    const used = s.tokens?.totalMeasurable ?? 0;
+    const usedFmt = s.tokens?.formatted?.total || '0';
+    const limit = s.model?.contextWindow || null;
+    const limitFmt = limit ? s.tokens?.formatted?.contextWindow : null;
+    const p = s.utilization?.percentage;
+    const planTier = s.plan?.tier && s.plan.tier !== 'unknown' ? s.plan.tier : null;
+    const planName = planTier ? planTier.charAt(0).toUpperCase() + planTier.slice(1) : null;
+    const modelName = s.model?.displayName && s.model.id !== 'unknown' ? s.model.displayName : 'model unknown';
+
+    // Bar
+    const color = p === null || p === undefined ? 'var(--unk)' : p >= 85 ? 'var(--bad)' : p >= 65 ? 'var(--warn)' : 'var(--ok)';
+    dot.style.background = color;
+    fill.style.background = color;
+    if (limit && p !== null && p !== undefined) {
+      tokens.textContent = `${usedFmt} / ${limitFmt}`;
+      fill.style.width = `${Math.min(100, p)}%`;
+      const usedPct = p === 0 && used > 0 ? '<0.1' : String(p);
+      pct.textContent = `${usedPct}% · ${Math.max(0, Math.round((100 - p) * 10) / 10)}% left`;
+      meterEl.style.display = '';
+    } else {
+      tokens.textContent = `${usedFmt} tokens`;
+      pct.textContent = planName ? 'window unknown for this model' : 'window unknown (plan not detected)';
+      meterEl.style.display = 'none';
+    }
+    model.textContent = [modelName, planName].filter(Boolean).join(' · ');
+    model.title = model.textContent;
+
+    // Panel
+    const tag = (el, text, evidence) => {
+      el.textContent = text;
+      if (evidence) {
+        const t = document.createElement('span');
+        t.className = 'tag';
+        t.textContent = evidence;
+        el.appendChild(t);
+      }
+    };
+    const statusTag = s.model?.limitStatus === 'VERIFIED' ? 'VERIFIED' : (limit ? 'UNVERIFIED' : 'UNKNOWN');
+    tag(rows.used, `${used.toLocaleString()} tokens`, 'ESTIMATED');
+    tag(rows.limit, limit ? `${limit.toLocaleString()} tokens` : 'Unknown', statusTag);
+    rows.left.textContent = limit ? `${Math.max(0, limit - used).toLocaleString()} tokens` : '—';
+    rows.user.textContent = (s.tokens?.user ?? 0).toLocaleString();
+    rows.assistant.textContent = (s.tokens?.assistant ?? 0).toLocaleString();
+    rows.attachments.textContent = s.observables?.attachmentsCount
+      ? `${s.observables.attachmentsCount} (${(s.tokens?.attachments ?? 0).toLocaleString()} est.)`
+      : 'None';
+    tag(rows.hidden, 'Not measurable', 'UNKNOWN');
+    tag(rows.model, modelName, s.evidence?.model?.source ? s.evidence.model.source.replace('_', ' ') : null);
+    tag(rows.plan, planName || 'Unknown', s.evidence?.plan?.source ? s.evidence.plan.source.replace('_', ' ') : null);
+    const ds = s.observables?.dataSource;
+    rows.source.textContent = ds === 'authoritative' ? 'ChatGPT API (full conversation)'
+      : ds === 'dom_fallback' ? 'Page text (API unavailable)' : 'Page text';
+    rows.turns.textContent = String(s.observables?.messagesCount ?? 0);
+
+    notes.textContent = '';
+    const level = s.confidence?.level || 'LOW';
+    const pctConf = s.confidence?.percentage ?? Math.round((s.confidence?.score || 0) * 100);
+    const head = document.createElement('div');
+    head.textContent = `${pctConf}% (${level})`;
+    notes.appendChild(head);
+    for (const f of (s.confidence?.factors || []).slice(0, 6)) {
+      const d = document.createElement('div');
+      d.className = f.type === 'positive' ? 'pos' : 'neg';
+      d.textContent = `${f.type === 'positive' ? '+' : '−'} ${f.text}`;
+      notes.appendChild(d);
+    }
+
+    warn.textContent = s.observables?.apiError
+      ? `API: ${s.observables.apiError}`
+      : (s.completeness?.domIsPartial ? 'Count may be low: only turns rendered on the page were read.' : '');
+  }
+
   unmount() {
     if (this.hostElement) {
       this.hostElement.remove();
       this.hostElement = null;
       this.shadowRoot = null;
+      this.el = {};
     }
   }
 }

@@ -251,6 +251,7 @@ export class RequestObserver {
 
     this.activeStreamingTurn = {
       id: messageId,
+      conversationId: payload.conversationId || this.activeConversationId || null,
       role: payload.role || 'assistant',
       parts: [{ type: 'text', text }],
       text,

@@ -186,26 +186,29 @@ export class ModelDetector {
       "button.text-token-text-secondary"
     ];
 
+    // 1. Real slug stamped on assistant messages; the last one is the model currently in use
+    const slugEls = root.querySelectorAll("[data-message-model-slug]");
+    for (let i = slugEls.length - 1; i >= 0; i--) {
+      const slug = slugEls[i].getAttribute('data-message-model-slug');
+      if (slug && slug !== 'user') return slug;
+    }
+
+    // 2. Header / switcher text, only when it actually looks like a model name
+    //    (buttons like "Share" or "Think" used to be returned as the model)
+    const looksLikeModel = (t) => /\b(gpt[-\s]?\d|o\d\b|\d(\.\d+)?\s*(instant|thinking|pro|mini)?\b|4o)/i.test(t);
     for (let i = 0; i < candidateSelectors.length; i++) {
       const el = root.querySelector(candidateSelectors[i]);
       if (el) {
         const text = (el.innerText || el.textContent || '').trim();
-        if (text && !text.includes('ChatGPT') && text.length < 50) {
+        if (text && !text.includes('ChatGPT') && text.length < 50 && looksLikeModel(text)) {
           return text;
         }
         // "ChatGPT 5.6 Thinking" -> "5.6 Thinking" (keep the mode word; it decides the limit family)
         const match = text.match(/ChatGPT\s+([^\n]{1,40})/i);
-        if (match) {
+        if (match && looksLikeModel(match[1])) {
           return match[1].trim();
         }
       }
-    }
-
-    // Check message turn attributes (some ChatGPT builds stamp data-message-model-slug)
-    const slugEl = root.querySelector('[data-message-model-slug]');
-    if (slugEl) {
-      const slug = slugEl.getAttribute('data-message-model-slug');
-      if (slug && slug !== 'user') return slug;
     }
 
     // Check page title or URL params if applicable

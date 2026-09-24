@@ -27,10 +27,13 @@ function loadInterceptor(respond) {
     location: { origin: 'https://chatgpt.com', href: 'https://chatgpt.com/' },
     fetch: async (url, init) => respond(url, init),
     postMessage: (msg) => posted.push(msg),
-    addEventListener: () => {}
+    addEventListener: (type, fn) => { if (type === 'message') listeners.push(fn); }
   };
+  const listeners = [];
   vm.runInNewContext(interceptorCode, { window, URL, TextDecoder, Response, setTimeout, console });
-  return { window, posted };
+  // Simulates the isolated-world content script connecting later (document_idle)
+  const ping = () => listeners.forEach(fn => fn({ source: window, data: { source: 'CHATGPT_CONTEXT_MONITOR_ISOLATED', type: 'PING' } }));
+  return { window, posted, ping };
 }
 
 const settle = () => new Promise(r => setTimeout(r, 20));
@@ -96,6 +99,23 @@ export async function runInterceptorTests() {
     await settle();
     const plan = posted.find(m => m.eventType === 'ACCOUNT_PLAN_OBSERVED');
     assert('Plan read from accounts[x].account.plan_type (not "structure")', plan && plan.payload.planType === 'plus');
+  }
+
+  // 4b. Early events are replayed when the isolated listener connects late
+  {
+    const tree = { conversation_id: '0a1b2c3d-4e5f', mapping: { a: { id: 'a', message: null } } };
+    const { window, posted, ping } = loadInterceptor((url) => new Response(JSON.stringify(
+      url.includes('accounts') ? { accounts: { default: { account: { plan_type: 'pro' } } } } : tree
+    ), { status: 200 }));
+    await window.fetch('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', { method: 'GET' });
+    await window.fetch('https://chatgpt.com/backend-api/conversation/0a1b2c3d-4e5f', { method: 'GET' });
+    await settle();
+    posted.length = 0; // Pretend nobody was listening yet
+    ping();
+    const plan = posted.find(m => m.eventType === 'ACCOUNT_PLAN_OBSERVED');
+    const conv = posted.find(m => m.eventType === 'CONVERSATION_LOADED');
+    assert('Plan event replayed to a late listener', plan && plan.payload.planType === 'pro');
+    assert('Page-loaded conversation (full tree) replayed to a late listener', conv && conv.payload.data && conv.payload.conversationId === '0a1b2c3d-4e5f');
   }
 
   // 5. /backend-api/memories is not mistaken for /backend-api/me

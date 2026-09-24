@@ -6,7 +6,9 @@
  * 
  * Features:
  * - Direct tree traversal from current_node leaf to root (resolves active branch without orphaned/edited turns).
- * - Safe session handling: uses ambient same-origin credentials, zero credential logging or storage.
+ * - Session handling: reads the bearer token from same-origin /api/auth/session (required by
+ *   /backend-api), keeps it in a private in-memory field, sends it only to chatgpt.com, never logs or stores it.
+ * - Falls back to the conversation JSON the page itself downloaded (captured by the MAIN-world interceptor).
  * - Extracts message IDs, author roles, content types, parts[], model slugs, and file attachments.
  * - Robust error handling for 401/403/404/429, malformed JSON, and network interruptions.
  * - Automatic cycle detection and graceful fallbacks.
@@ -22,6 +24,8 @@ export class ConversationClient {
     this.cacheTtlMs = options.cacheTtlMs || 5000; // 5-second in-memory cache to prevent spamming
     this.activeFetches = new Map(); // conversationId -> Promise
     this.lastError = null;
+    this.failures = new Map(); // conversationId -> { result, timestamp }
+    this.captured = new Map(); // conversationId -> raw payload seen on the page's own request
     this.session = null; // { ok, status, planType, fetchedAt } - safe to expose, holds no token
     this._sessionPromise = null;
   }
@@ -66,12 +70,12 @@ export class ConversationClient {
         }
       } catch (err) {
         this.session = { ok: false, status: 0, error: err.message, planType: null, fetchedAt: now };
-      } finally {
-        this._sessionPromise = null;
       }
       return this.session;
     })();
-    return this._sessionPromise;
+    const pending = this._sessionPromise;
+    pending.finally(() => { if (this._sessionPromise === pending) this._sessionPromise = null; });
+    return pending;
   }
 
   /**
@@ -141,6 +145,12 @@ export class ConversationClient {
       }
     }
 
+    // Back off after a failure so DOM mutations don't hammer a failing endpoint
+    const failed = this.failures.get(conversationId);
+    if (!fetchOptions.force && failed && now - failed.timestamp < 15000) {
+      return failed.result;
+    }
+
     // Deduplicate concurrent requests for the same conversation ID
     if (this.activeFetches.has(conversationId)) {
       return this.activeFetches.get(conversationId);
@@ -151,18 +161,22 @@ export class ConversationClient {
       const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
 
       try {
-        const origin = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : this.baseUrl;
-        const endpoint = `${origin}/backend-api/conversation/${conversationId}`;
-
-        // Attempt same-origin fetch with ambient session cookies
-        const response = await fetch(endpoint, {
+        const endpoint = `${this._origin()}/backend-api/conversation/${conversationId}`;
+        const doFetch = () => fetch(endpoint, {
           method: 'GET',
-          headers: {
-            'Accept': 'application/json'
-          },
+          headers: this._backendHeaders(),
           credentials: 'same-origin',
           signal: controller ? controller.signal : undefined
         });
+
+        // /backend-api needs the session bearer token; cookies alone return 401
+        await this.getSession();
+        let response = await doFetch();
+        if (response.status === 401) {
+          // Token expired: refresh the session once and retry
+          await this.getSession({ force: true });
+          response = await doFetch();
+        }
 
         if (timeoutId) clearTimeout(timeoutId);
 
@@ -171,7 +185,9 @@ export class ConversationClient {
           let errorMessage = `HTTP error ${status}`;
 
           if (status === 401 || status === 403) {
-            errorMessage = 'Unauthorized: session cookie expired or unauthenticated';
+            errorMessage = this.session?.ok
+              ? `Unauthorized (${status}) even with session token`
+              : `Unauthorized (${status}): could not read login session (/api/auth/session ${this.session?.status ?? 'n/a'})`;
           } else if (status === 404) {
             errorMessage = 'Conversation not found on backend (new or deleted chat)';
           } else if (status === 429) {
@@ -205,13 +221,36 @@ export class ConversationClient {
         this.lastError = { status: 0, message: errorMessage, timestamp: now };
 
         return { success: false, error: errorMessage, isNetworkError: true };
-      } finally {
-        this.activeFetches.delete(conversationId);
       }
     })();
 
-    this.activeFetches.set(conversationId, fetchPromise);
-    return fetchPromise;
+    const resultPromise = fetchPromise.then(result => {
+      this.activeFetches.delete(conversationId);
+      if (result.success) {
+        this.failures.delete(conversationId);
+        return result;
+      }
+      // Our fetch failed: fall back to the copy captured from the page's own request
+      const captured = this.captured.get(conversationId);
+      if (captured) return { success: true, data: captured, fromCapture: true, fetchError: result.error };
+      this.failures.set(conversationId, { result, timestamp: Date.now() });
+      return result;
+    });
+    this.activeFetches.set(conversationId, resultPromise);
+    return resultPromise;
+  }
+
+  /**
+   * Accepts a conversation payload captured passively from the page's own request
+   * (MAIN-world interceptor), so we have authoritative data even if our fetch fails.
+   * @param {string} conversationId
+   * @param {Object} data Raw /backend-api/conversation/{id} JSON
+   */
+  ingestConversation(conversationId, data) {
+    if (!conversationId || !data || !data.mapping) return;
+    this.captured.set(conversationId, data);
+    this.cache.set(conversationId, { data, timestamp: Date.now() });
+    this.failures.delete(conversationId);
   }
 
   /**
@@ -372,8 +411,8 @@ export class ConversationClient {
       const parts = this.normalizeParts(msg.content);
       const attachments = this.normalizeAttachments(msg.metadata);
 
-      // Extract model slug from assistant messages if present
-      if (msg.metadata?.model_slug && !detectedModelSlug) {
+      // Latest assistant slug wins: model can change mid-conversation and the current one sets the limit
+      if (role === 'assistant' && msg.metadata?.model_slug) {
         detectedModelSlug = msg.metadata.model_slug;
       }
 
@@ -400,7 +439,8 @@ export class ConversationClient {
       messages.push({
         id: msg.id || node.id || `turn-${turnIndex}-${role}`,
         nodeId: node.id,
-        role: role === 'assistant' ? 'assistant' : 'user',
+        // Tool output (search results, code execution) is model-side context, not user input
+        role: role === 'user' ? 'user' : (role === 'tool' ? 'tool' : 'assistant'),
         text: combinedText,
         parts,
         modelSlug: msg.metadata?.model_slug || null,
@@ -427,7 +467,7 @@ export class ConversationClient {
     return {
       conversationId: conversationPayload.conversation_id || null,
       title: conversationPayload.title || '',
-      modelSlug: detectedModelSlug,
+      modelSlug: detectedModelSlug || conversationPayload.default_model_slug || null,
       messages,
       attachments: {
         count: allAttachments.length,

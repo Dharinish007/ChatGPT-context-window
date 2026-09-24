@@ -120,6 +120,10 @@ export class ContentScriptCoordinator {
    * @param {Object} meta 
    */
   handleConversationLoaded(meta = {}) {
+    // The page downloaded the full conversation tree itself; keep it as authoritative fallback data
+    if (meta.conversationId && meta.data) {
+      this.conversationClient.ingestConversation(meta.conversationId, meta.data);
+    }
     if (meta.conversationId && meta.conversationId !== this.activeConversationId) {
       this.activeConversationId = meta.conversationId;
       this.requestObserver.setActiveConversationId(meta.conversationId);
@@ -179,8 +183,14 @@ export class ContentScriptCoordinator {
       let authMessagesCount = null;
       let normalized = null;
 
+      // Session gives the bearer token for the API and the account plan (cached, cheap to call)
+      const session = await this.conversationClient.getSession();
+
       if (conversationId) {
         const authResult = await this.conversationClient.fetchConversation(conversationId);
+        if (authResult.fromCapture) {
+          apiError = `Direct fetch failed (${authResult.fetchError}); using the page's own conversation response`;
+        }
         if (authResult.success && authResult.data) {
           normalized = this.conversationClient.normalizeConversation(authResult.data);
           if (normalized.messages && normalized.messages.length > 0) {
@@ -242,6 +252,13 @@ export class ContentScriptCoordinator {
         }
       } else if (domStreamingTurn) {
         activeStreamingTurn = domStreamingTurn;
+      }
+
+      // A just-finished network turn may not be in API data yet (e.g. API refresh failed); keep it
+      if (!activeStreamingTurn && netStreamingTurn && netStreamingTurn.text &&
+          (!netStreamingTurn.conversationId || netStreamingTurn.conversationId === conversationId) &&
+          !effectiveMessages.some(m => m.id === netStreamingTurn.id || m.text === netStreamingTurn.text)) {
+        effectiveMessages.push({ ...netStreamingTurn, isStreaming: false });
       }
 
       if (activeStreamingTurn) {
@@ -365,9 +382,11 @@ export class ContentScriptCoordinator {
         });
       }
       const domModel = this.modelDetector.detect(document);
-      if (domModel && domModel.id && domModel.id !== 'unknown') {
+      // Pass the raw slug (not the resolved family key) so the UI shows the real model name
+      const domModelRaw = this.modelDetector.detectRawModelString(document);
+      if (domModelRaw && domModel && domModel.id !== 'unknown') {
         modelCandidates.push({
-          value: domModel.id,
+          value: domModelRaw,
           source: 'dom',
           evidenceType: EvidenceType.OBSERVED
         });
@@ -424,6 +443,13 @@ export class ContentScriptCoordinator {
 
       // Plan candidates (Group F)
       const planCandidates = [];
+      if (session?.planType) {
+        planCandidates.push({
+          value: normalizePlanTier(session.planType),
+          source: 'session_api',
+          evidenceType: EvidenceType.EXACT
+        });
+      }
       const netPlan = this.requestObserver.getObservedPlan();
       if (netPlan && netPlan.value) {
         planCandidates.push({
@@ -453,7 +479,7 @@ export class ContentScriptCoordinator {
 
       // Update model + plan-aware limits with winning evidence
       const winningPlan = reconciled.evidence?.plan?.value || domPlan?.value || PlanTier.UNKNOWN;
-      const winningModelSlug = reconciled.evidence?.model?.value || (model && model.id) || (domModel && domModel.id) || 'unknown';
+      const winningModelSlug = reconciled.evidence?.model?.value || domModelRaw || null;
       model = this.modelDetector.resolveModel(winningModelSlug, winningPlan);
 
       // 10. Calculate context metrics
@@ -481,6 +507,38 @@ export class ContentScriptCoordinator {
       contextState.observables.authoritativeMessagesCount = authMessagesCount;
       contextState.observables.network = networkHealth;
       contextState.observables.plan = winningPlan;
+
+      // Structure-only snapshot for the "Copy diagnostics" button: no message text, no token
+      contextState.diagnostics = {
+        version: typeof chrome !== 'undefined' && chrome.runtime?.getManifest ? chrome.runtime.getManifest().version : null,
+        path: location.pathname.replace(/[0-9a-f-]{20,}/gi, ':id'),
+        session: session ? { ok: session.ok, status: session.status, planType: session.planType || null } : null,
+        conversationApi: conversationId ? {
+          dataSource,
+          error: apiError || null,
+          authoritativeTurns: authMessagesCount
+        } : 'no conversation id in URL',
+        dom: {
+          turns: rawDomMessages.length,
+          roleNodes: document.querySelectorAll('[data-message-author-role]').length,
+          turnContainers: document.querySelectorAll("[data-testid^='conversation-turn-']").length,
+          articles: document.querySelectorAll('article').length,
+          sections: document.querySelectorAll('section').length,
+          modelSlugNodes: document.querySelectorAll('[data-message-model-slug]').length,
+          rawModel: domModelRaw
+        },
+        network: {
+          available: networkHealth.networkAvailable,
+          observedModel: this.requestObserver.getObservedModel()?.value || null,
+          observedPlan: netPlan?.value || null,
+          unsupportedEndpoints: Array.from(this.requestObserver.unsupportedEndpoints || []).slice(0, 15)
+        },
+        candidates: {
+          model: modelCandidates.map(c => `${c.source}:${c.value}`),
+          plan: planCandidates.map(c => `${c.source}:${c.value}`)
+        },
+        resolved: { model: model?.id, limit: contextState.model?.contextWindow, limitStatus: contextState.model?.limitStatus }
+      };
 
       if (apiError) {
         contextState.observables.apiError = apiError;

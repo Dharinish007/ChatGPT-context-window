@@ -66,6 +66,21 @@ ChatGPT Web Page
 
 ---
 
+## 3b. Where Each Value Comes From (highest priority first)
+
+| Value | Sources |
+| :--- | :--- |
+| **Conversation turns** | `GET /backend-api/conversation/{id}` with the session bearer token → the same JSON captured from the page's own request → page DOM (`[data-message-author-role]`, turn containers) |
+| **Model** | Latest assistant `metadata.model_slug` from the API → live stream metadata → `data-message-model-slug` in the DOM → header text (only if it looks like a model name) |
+| **Plan** | `account.planType` from `/api/auth/session` → `accounts/check` response → sidebar/profile text |
+| **Context window** | `config/model-limits.json` (model family × plan) |
+
+**Session token:** `/backend-api` rejects cookie-only requests, so the content script reads `accessToken` from same-origin `/api/auth/session` (exactly what ChatGPT's own page does). It lives only in a private in-memory field, is sent only to `chatgpt.com`, and is never logged, stored, or included in extension state or diagnostics.
+
+**Status bar:** a one-line bar docked above the composer (`61.5K / 256K · 24% · 76% left │ model · plan`). Click it for the breakdown; **Copy diagnostics** copies a structure-only JSON snapshot (source statuses, selector counts, candidates; no message text, no token) for troubleshooting.
+
+---
+
 ## 4. Known Limitations
 
 In compliance with project requirements, the following constraints are explicitly documented:

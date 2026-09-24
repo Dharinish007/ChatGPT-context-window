@@ -12,6 +12,7 @@ import { runEvidenceConfidenceTests } from './unit/evidence-confidence.test.js';
 import { runModelPlanLimitsTests } from './unit/model-plan-limits.test.js';
 import { runBundleIntegrityTests } from './unit/bundle-integrity.test.js';
 import { runInterceptorTests } from './unit/interceptor.test.js';
+import { runLiveSourcesTests } from './unit/live-sources.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -80,6 +81,12 @@ console.log('');
 const r10 = await runInterceptorTests();
 totalPassed += r10.passed;
 totalFailed += r10.failed;
+console.log('');
+
+// 11. Live data sources (session bearer, capture fallback, backoff)
+const r11 = await runLiveSourcesTests();
+totalPassed += r11.passed;
+totalFailed += r11.failed;
 console.log('');
 
 const t1 = performance.now();

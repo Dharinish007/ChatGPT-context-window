@@ -159,31 +159,33 @@ async function main() {
     const mockChatGPTDOM = `
       document.body.innerHTML = \`
         <div id="__next">
+          <!-- Newer ChatGPT markup: generic header, stray empty <article>, <section> turns -->
           <header>
             <button data-testid="profile-button">ChatGPT Plus</button>
-            <button data-testid="model-switcher-dropdown">GPT-4o</button>
+            <button class="text-token-text-secondary">Share</button>
           </header>
+          <article class="sidebar-card"></article>
           <main>
-            <article data-testid="conversation-turn-1">
-              <div data-message-author-role="user">
+            <section data-testid="conversation-turn-1" data-turn="user">
+              <div data-message-author-role="user" data-message-id="m-1">
                 <div class="whitespace-pre-wrap">Hello, can you help explain quantum computing?</div>
               </div>
-            </article>
-            <article data-testid="conversation-turn-2">
-              <div data-message-author-role="assistant">
+            </section>
+            <section data-testid="conversation-turn-2" data-turn="assistant">
+              <div data-message-author-role="assistant" data-message-id="m-2" data-message-model-slug="gpt-5-5-thinking">
                 <div class="markdown">Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.</div>
               </div>
-            </article>
-            <article data-testid="conversation-turn-3">
-              <div data-message-author-role="user">
+            </section>
+            <section data-testid="conversation-turn-3" data-turn="user">
+              <div data-message-author-role="user" data-message-id="m-3">
                 <div class="whitespace-pre-wrap">What are qubits and superposition?</div>
               </div>
-            </article>
-            <article data-testid="conversation-turn-4">
-              <div data-message-author-role="assistant">
+            </section>
+            <section data-testid="conversation-turn-4" data-turn="assistant">
+              <div data-message-author-role="assistant" data-message-id="m-4" data-message-model-slug="gpt-5-5-thinking">
                 <div class="markdown">A qubit is the basic unit of quantum information, analogous to the classical binary bit. Superposition allows qubits to exist in a state that represents both 0 and 1 simultaneously.</div>
               </div>
-            </article>
+            </section>
           </main>
         </div>
       \`;
@@ -290,6 +292,14 @@ async function main() {
         success = false;
       }
 
+      // Newer markup must resolve the real slug to the reasoning family with the Plus limit (256K)
+      if (processedState.turnCount === 4 && processedState.modelId === 'chatgpt-reasoning' && processedState.contextWindow === 256000) {
+        console.log('✅ [PASS] Newer markup: 4 turns, gpt-5-5-thinking -> Thinking family, Plus 256K window');
+      } else {
+        console.error(`❌ [FAIL] Newer markup resolved to turns=${processedState.turnCount} model=${processedState.modelId} window=${processedState.contextWindow}`);
+        success = false;
+      }
+
       if (processedState.confidenceLevel) {
         console.log(`✅ [PASS] Confidence calculated: ${Math.round(processedState.confidencePercent * 100)}% (${processedState.confidenceLevel})`);
       }
@@ -306,8 +316,8 @@ async function main() {
           if (!hudHost) return { found: false };
           const shadowRoot = hudHost.shadowRoot;
           if (!shadowRoot) return { found: true, shadowRoot: false };
-          const modelTag = shadowRoot.querySelector('.model-tag');
-          const metricText = shadowRoot.querySelector('.metric-text');
+          const modelTag = shadowRoot.querySelector('.model');
+          const metricText = shadowRoot.querySelector('.tokens');
           return {
             found: true,
             shadowRoot: true,
