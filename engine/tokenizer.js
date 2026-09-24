@@ -42,10 +42,13 @@ export const MODEL_TO_ENCODING = Object.freeze({
 
 export class Tokenizer {
   constructor(options = {}) {
-    this.maxCacheSize = options.maxCacheSize || 2000;
+    // Entries are tiny (numbers); room for several long conversations so switching back is instant
+    this.maxCacheSize = options.maxCacheSize || 6000;
     this.defaultEncoding = options.defaultEncoding || SUPPORTED_ENCODINGS.O200K_BASE;
     // Map: messageId -> { hash: number, tokens: number, textLength: number, encoding: string }
     this.cache = new Map();
+    // Work counters for performance diagnostics: BPE runs vs cache reuse
+    this.stats = { encoded: 0, encodedChars: 0, cacheHits: 0 };
     // Lazy instance cache: encodingName -> Tiktoken instance
     this.encoders = new Map();
   }
@@ -240,14 +243,21 @@ export class Tokenizer {
 
     if (cacheKey && this.cache.has(cacheKey)) {
       const cached = this.cache.get(cacheKey);
-      if (cached.hash === hash && cached.encoding === encoding) {
+      if (cached.hash === hash && cached.textLength === textOrParts.length && cached.encoding === encoding) {
+        // Re-insert so eviction drops the least recently USED entry, not the oldest inserted
+        this.cache.delete(cacheKey);
+        this.cache.set(cacheKey, cached);
+        this.stats.cacheHits++;
         return cached.tokens;
       }
     }
 
     const tokens = this.countTokens(textOrParts, encoding);
+    this.stats.encoded++;
+    this.stats.encodedChars += textOrParts.length;
 
     if (cacheKey) {
+      this.cache.delete(cacheKey);
       if (this.cache.size >= this.maxCacheSize) {
         const oldestKey = this.cache.keys().next().value;
         this.cache.delete(oldestKey);

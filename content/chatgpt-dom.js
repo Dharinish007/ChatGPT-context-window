@@ -20,6 +20,8 @@ export class ChatGPTDOMObserver {
     this.observer = null;
     this.debounceTimer = null;
     this._pendingSince = 0;
+    this._composer = null;
+    this.ignoredMutations = 0; // Batches skipped as irrelevant (performance diagnostics)
     this.lastUrl = typeof window !== 'undefined' ? window.location.href : '';
     this.isStreaming = false;
   }
@@ -73,6 +75,12 @@ export class ChatGPTDOMObserver {
    * @param {MutationRecord[]} mutations 
    */
   handleMutations(mutations) {
+    // Typing in the chat input, the sidebar list and our own widget cannot change the conversation's
+    // context; skipping them removes most idle work (every keystroke used to start a full pass)
+    if (Array.isArray(mutations) && mutations.length > 0 && !mutations.some(m => this._isRelevant(m))) {
+      this.ignoredMutations++;
+      return;
+    }
     const streamingNow = this.checkIsStreaming();
     this.isStreaming = streamingNow;
 
@@ -88,9 +96,29 @@ export class ChatGPTDOMObserver {
 
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      const triggeredAt = this._pendingSince; // First unhandled change: start of the update latency
       this._pendingSince = 0;
-      this.triggerUpdate();
+      this.triggerUpdate({ triggeredAt });
     }, delay);
+  }
+
+  /**
+   * False for mutations inside regions that never hold conversation content: the chat input's form
+   * (unless it is the model switcher), the sidebar <nav>, and the extension's own widget.
+   * @param {MutationRecord} m
+   * @returns {boolean}
+   */
+  _isRelevant(m) {
+    const node = m.target && (m.target.nodeType === 1 ? m.target : m.target.parentElement);
+    if (!node || !node.closest) return true;
+    if (node.closest('#chatgpt-context-monitor-host, nav')) return false;
+    if (!this._composer || !this._composer.isConnected) {
+      this._composer = document.querySelector('#prompt-textarea')?.closest('form') || null;
+    }
+    if (this._composer && this._composer.contains(node)) {
+      return Boolean(node.closest("[data-testid*='model-switcher'], [data-testid*='model-selector']"));
+    }
+    return true;
   }
 
   /**

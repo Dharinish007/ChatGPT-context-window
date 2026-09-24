@@ -388,6 +388,103 @@ async function main() {
       else { console.error(`❌ [FAIL] ${name}`); success = false; }
     }
 
+    const evalValue = async (expression) => (await client.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result?.value;
+    const report = (name, ok, detail) => {
+      if (ok) console.log(`✅ [PASS] ${name}`);
+      else { console.error(`❌ [FAIL] ${name}${detail ? ' ' + JSON.stringify(detail) : ''}`); success = false; }
+    };
+
+    console.log('\n--- Test 5: Confidence Reasons, Light & Dark Themes ---');
+    const themeCheck = await evalValue(`
+      (async () => {
+        const sr = document.getElementById('chatgpt-context-monitor-host').shadowRoot;
+        const lum = (el) => { const [r, g, b] = getComputedStyle(el).backgroundColor.match(/\\d+/g).map(Number); return 0.299 * r + 0.587 * g + 0.114 * b; };
+        const factors = window.__latestStoredState.latestContextState.confidence.factors.length;
+        const shownReasons = sr.querySelectorAll('details.conf .evidence li').length;
+        document.body.style.background = '#ffffff';
+        await new Promise(r => setTimeout(r, 50));
+        const light = { dark: sr.querySelector('.root').classList.contains('dark'), lum: lum(sr.querySelector('.card')) };
+        document.body.style.background = '#212121';
+        await new Promise(r => setTimeout(r, 50));
+        const dark = { dark: sr.querySelector('.root').classList.contains('dark'), lum: lum(sr.querySelector('.card')) };
+        document.body.style.background = '';
+        await new Promise(r => setTimeout(r, 50));
+        return { factors, shownReasons, light, dark };
+      })()
+    `);
+    console.log('[Chrome] Themes:', JSON.stringify(themeCheck));
+    report('Opened Confidence shows every existing reason', themeCheck?.shownReasons > 0 && themeCheck.shownReasons === themeCheck.factors);
+    report('Light page -> light card', themeCheck?.light.dark === false && themeCheck.light.lum > 200);
+    report('Dark page -> dark card, applied immediately on theme switch', themeCheck?.dark.dark === true && themeCheck.dark.lum < 60);
+
+    console.log('\n--- Test 6: Responsive Placement & Stability ---');
+    // A composer like the chat input of any provider, centered at the bottom
+    await evalValue(`
+      document.body.insertAdjacentHTML('beforeend', '<form id="composer" style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);width:min(560px, calc(100vw - 32px))"><textarea id="prompt-textarea" style="display:block;width:100%;height:56px"></textarea></form>');
+      true
+    `);
+    const viewports = [[1280, 800, 'beside'], [900, 800, 'above'], [390, 760, 'above']];
+    for (const [width, height, expected] of viewports) {
+      await client.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await delay(250);
+      const layout = await evalValue(`
+        (async () => {
+          const host = document.getElementById('chatgpt-context-monitor-host');
+          const sr = host.shadowRoot;
+          const card = sr.querySelector('.card');
+          const summary = sr.querySelector('.summary');
+          const composer = document.getElementById('composer').getBoundingClientRect();
+          const box = (el) => { const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width }; };
+          const overlaps = (a, b) => a.l < b.right && a.r > b.left && a.t < b.bottom && a.b > b.top;
+          const openBefore = sr.querySelector('.root').classList.contains('open');
+          if (openBefore) sr.querySelector('.toggle.chev').click();
+          await new Promise(r => requestAnimationFrame(() => r()));
+          const closed = box(card);
+          const summaryClosed = box(summary);
+          sr.querySelector('.toggle.chev').click();
+          await new Promise(r => requestAnimationFrame(() => r()));
+          const open = box(card);
+          const summaryOpen = box(summary);
+          sr.querySelector('.toggle.chev').click();
+          return {
+            placement: host.dataset.placement,
+            vw: innerWidth, vh: innerHeight, closed, open, summaryClosed, summaryOpen,
+            overlapsComposer: overlaps(closed, composer) || overlaps(summaryOpen, composer),
+            pageScrollsSideways: document.documentElement.scrollWidth > innerWidth
+          };
+        })()
+      `);
+      const inView = (b) => b && b.l >= 0 && b.r <= layout.vw && b.t >= 0 && b.b <= layout.vh;
+      console.log(`[Chrome] ${width}x${height}:`, JSON.stringify({ placement: layout?.placement, closed: layout?.closed, open: layout?.open }));
+      report(`${width}px: placed ${expected} the chat input`, layout?.placement === expected, layout?.placement);
+      report(`${width}px: collapsed and expanded card stay inside the window`, inView(layout?.closed) && inView(layout?.open), layout);
+      report(`${width}px: never covers the chat input`, layout?.overlapsComposer === false);
+      report(`${width}px: expanding does not move the summary or change the width (no jump)`,
+        layout && Math.abs(layout.summaryOpen.t - layout.summaryClosed.t) < 1 && Math.abs(layout.summaryOpen.l - layout.summaryClosed.l) < 1 && Math.abs(layout.open.w - layout.closed.w) < 1);
+      report(`${width}px: no horizontal page scroll introduced`, layout?.pageScrollsSideways === false);
+    }
+    await client.send('Emulation.clearDeviceMetricsOverride');
+
+    console.log('\n--- Test 7: No Unnecessary Re-rendering ---');
+    const churn = await evalValue(`
+      (async () => {
+        const sr = document.getElementById('chatgpt-context-monitor-host').shadowRoot;
+        sr.querySelector('.toggle.chev').click(); // expanded: details render too
+        await new Promise(r => setTimeout(r, 50));
+        let mutations = 0;
+        const mo = new MutationObserver((list) => { mutations += list.length; });
+        mo.observe(sr, { childList: true, characterData: true, subtree: true });
+        const before = window.__updates || 0;
+        sr.querySelector('.refresh').click(); // same data re-read and re-rendered
+        await new Promise(r => setTimeout(r, 300));
+        mo.disconnect();
+        sr.querySelector('.toggle.chev').click();
+        return { updates: (window.__updates || 0) - before, mutations };
+      })()
+    `);
+    console.log('[Chrome] Re-render churn:', JSON.stringify(churn));
+    report('Identical update re-renders nothing (no flicker)', churn?.updates >= 1 && churn.mutations === 0, churn);
+
     client.close();
   } catch (err) {
     console.error('Verification error:', err);

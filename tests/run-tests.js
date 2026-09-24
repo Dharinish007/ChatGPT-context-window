@@ -17,6 +17,7 @@ import { runWidgetStateTests } from './unit/widget-state.test.js';
 import { runReliabilityTests } from './unit/reliability.test.js';
 import { runAccuracyTests } from './unit/accuracy.test.js';
 import { runFinalFixesTests } from './unit/final-fixes.test.js';
+import { runConfidenceDiagnosticsTests } from './unit/confidence-diagnostics.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -115,6 +116,12 @@ console.log('');
 const r15 = await runFinalFixesTests();
 totalPassed += r15.passed;
 totalFailed += r15.failed;
+console.log('');
+
+// 16. Part 3: confidence, evidence provenance, diagnostics
+const r16 = await runConfidenceDiagnosticsTests();
+totalPassed += r16.passed;
+totalFailed += r16.failed;
 console.log('');
 
 const t1 = performance.now();

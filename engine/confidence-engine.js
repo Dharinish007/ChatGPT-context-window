@@ -17,6 +17,19 @@ export const ConfidenceLevel = Object.freeze({
   LOW: 'LOW'
 });
 
+// Readable names for evidence sources, used in explanations and diagnostics
+export const SOURCE_LABELS = Object.freeze({
+  live_network: 'live network',
+  conversation_api: 'conversation API',
+  session_api: 'session API',
+  network: 'network',
+  dom: 'page (DOM)',
+  dom_heuristic: 'page heuristic',
+  model_db: 'limits table',
+  tokenizer: 'local tokenizer'
+});
+const sourceLabel = (s) => SOURCE_LABELS[s] || s;
+
 export class ConfidenceEngine {
   /**
    * Evaluates context measurement confidence based on observable evidence quality.
@@ -62,7 +75,8 @@ export class ConfidenceEngine {
       isNetworkActive = false,
       encoding = 'o200k_base',
       conflicts = [],
-      agreements // Fields confirmed by 2+ independent sources; undefined = legacy callers
+      agreements, // Fields confirmed by 2+ independent sources; undefined = legacy callers
+      evidence // Reconciled per-field evidence (value, source, evidenceType, confirmedBy); optional
     } = params;
 
     // 1. Authoritative exact system metadata (100% confidence)
@@ -72,6 +86,7 @@ export class ConfidenceEngine {
         score: 1.0,
         percentage: 100,
         reasons: ['Authoritative usage metadata provided directly by system'],
+        highBlockers: [],
         factors: [
           { type: 'positive', text: 'Authoritative exact usage metadata provided directly by system' },
           { type: 'positive', text: `Verified model context limits (${modelDisplayName || 'Verified Model'})` }
@@ -113,7 +128,13 @@ export class ConfidenceEngine {
     // --- Ground Truth Source Availability (Fallback Mode) ---
     if (completenessSource !== 'authoritative_api' && completenessSource !== 'in_flight_stream') {
       score -= 0.10;
-      factors.push({ type: 'negative', text: 'Authoritative conversation API unavailable; relying on DOM observation' });
+      factors.push({
+        type: 'negative',
+        // dom_complete is a chat with no saved conversation yet: there is nothing to read from the API
+        text: completenessSource === 'dom_complete'
+          ? 'No saved conversation to read from the API yet (new chat); counted from the page'
+          : 'Authoritative conversation API unavailable; relying on DOM observation'
+      });
     }
 
     // --- Factor B: Tokenization Reliability ---
@@ -163,7 +184,10 @@ export class ConfidenceEngine {
           factors.push({ type: 'negative', text: 'ChatGPT plan tier unknown; context window limit cannot be verified' });
         } else if (effectivePlanKnown && !isLimitVerified) {
           score -= 0.10;
-          factors.push({ type: 'negative', text: `Context limit for plan ${planTier} is unverified by OpenAI documentation` });
+          factors.push({
+            type: 'negative',
+            text: `Context limit for plan ${planTier} is unverified by OpenAI documentation${contextLimit ? '' : ' (no published limit; window UNKNOWN)'}`
+          });
         } else if (effectivePlanKnown && isLimitVerified) {
           factors.push({ type: 'positive', text: `Verified ${planTier.toUpperCase()} plan context limit` });
         }
@@ -190,7 +214,40 @@ export class ConfidenceEngine {
     // --- Factor H: Empty Conversation Detection ---
     if (messageCount === 0) {
       score = Math.min(score, 0.50);
-      factors.push({ type: 'negative', text: 'No conversation messages currently detected in DOM' });
+      factors.push({ type: 'negative', text: 'No conversation messages detected yet' });
+    }
+
+    // --- Provenance: which source supplied each value and which sources confirmed it ---
+    if (evidence) {
+      for (const [field, label] of [['model', 'Model'], ['plan', 'Plan'], ['turns', 'Turns']]) {
+        const e = evidence[field];
+        if (!e || e.value === null || e.value === undefined || e.source === 'unknown') continue; // Explained above as unknown
+        const confirmed = e.confirmedBy?.length ? `, confirmed by ${e.confirmedBy.map(sourceLabel).join(' + ')}` : ', single source';
+        factors.push({
+          // An inferred (ESTIMATED) value is a caveat, not support
+          type: e.evidenceType === 'ESTIMATED' ? 'negative' : 'positive',
+          text: `${label} ${e.value}: ${sourceLabel(e.source)} [${e.evidenceType}]${confirmed}`
+        });
+      }
+    }
+
+    // --- HIGH gate: every input of the displayed percentage must be backed by evidence ---
+    // Only checks the caller actually supplied (legacy callers without plan context skip plan/limit).
+    const highBlockers = [];
+    if (conflicts && conflicts.length > 0) highBlockers.push('sources disagree');
+    if (!isModelKnown) highBlockers.push('model unknown');
+    if (planTier !== undefined) {
+      const planKnown = isPlanKnown !== undefined ? isPlanKnown : (planTier !== 'unknown' && Boolean(planTier));
+      if (!planKnown || planTier === 'unknown') highBlockers.push('plan unknown');
+      else if (!contextLimit) highBlockers.push('context limit unknown');
+      else if (!isLimitVerified) highBlockers.push('context limit unverified');
+    }
+    if (['model', 'plan'].some(f => evidence?.[f]?.evidenceType === 'ESTIMATED')) highBlockers.push('value inferred, not reported');
+    if (isPartialConversation || completenessSource === 'dom_partial') highBlockers.push('conversation only partly read');
+    if (hasUnknownAttachments && attachmentCount > 0) highBlockers.push('attachment size unknown');
+    if (highBlockers.length > 0 && score >= 0.75) {
+      score = 0.74; // Keep the percentage inside the MEDIUM band so level and number agree
+      factors.push({ type: 'negative', text: `Not HIGH: ${highBlockers.join(', ')}` });
     }
 
     // Bound final score between 0.10 and 1.00
@@ -216,6 +273,7 @@ export class ConfidenceEngine {
       percentage,
       reasons,
       factors,
+      highBlockers, // Why HIGH was not given (empty when nothing blocks it)
       observableConfidence: {
         level,
         score: finalScore,

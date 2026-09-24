@@ -1139,10 +1139,13 @@ const MODEL_TO_ENCODING = Object.freeze({
 
 class Tokenizer {
   constructor(options = {}) {
-    this.maxCacheSize = options.maxCacheSize || 2000;
+    // Entries are tiny (numbers); room for several long conversations so switching back is instant
+    this.maxCacheSize = options.maxCacheSize || 6000;
     this.defaultEncoding = options.defaultEncoding || SUPPORTED_ENCODINGS.O200K_BASE;
     // Map: messageId -> { hash: number, tokens: number, textLength: number, encoding: string }
     this.cache = new Map();
+    // Work counters for performance diagnostics: BPE runs vs cache reuse
+    this.stats = { encoded: 0, encodedChars: 0, cacheHits: 0 };
     // Lazy instance cache: encodingName -> Tiktoken instance
     this.encoders = new Map();
   }
@@ -1337,14 +1340,21 @@ class Tokenizer {
 
     if (cacheKey && this.cache.has(cacheKey)) {
       const cached = this.cache.get(cacheKey);
-      if (cached.hash === hash && cached.encoding === encoding) {
+      if (cached.hash === hash && cached.textLength === textOrParts.length && cached.encoding === encoding) {
+        // Re-insert so eviction drops the least recently USED entry, not the oldest inserted
+        this.cache.delete(cacheKey);
+        this.cache.set(cacheKey, cached);
+        this.stats.cacheHits++;
         return cached.tokens;
       }
     }
 
     const tokens = this.countTokens(textOrParts, encoding);
+    this.stats.encoded++;
+    this.stats.encodedChars += textOrParts.length;
 
     if (cacheKey) {
+      this.cache.delete(cacheKey);
       if (this.cache.size >= this.maxCacheSize) {
         const oldestKey = this.cache.keys().next().value;
         this.cache.delete(oldestKey);
@@ -1565,7 +1575,8 @@ class EvidenceMerger {
       return pB - pA;
     });
 
-    const winner = validCandidates[0];
+    // confirmedBy: other reliable sources that reported the same value (provenance of the agreement)
+    const winner = { ...validCandidates[0], confirmedBy: [] };
     const conflicts = [];
 
     // Check for meaningful disagreements among candidates with priority >= 2
@@ -1576,6 +1587,9 @@ class EvidenceMerger {
 
       // compareKey lets a field compare normalized identities ("gpt-5-6" vs "GPT-5.6")
       const isDisagreement = this._isDisagreement(fieldName, winner.compareKey ?? winner.value, other.compareKey ?? other.value);
+      if (!isDisagreement && other.source !== winner.source && !winner.confirmedBy.includes(other.source)) {
+        winner.confirmedBy.push(other.source);
+      }
       if (isDisagreement) {
         conflicts.push({
           field: fieldName,
@@ -1767,6 +1781,19 @@ const ConfidenceLevel = Object.freeze({
   LOW: 'LOW'
 });
 
+// Readable names for evidence sources, used in explanations and diagnostics
+const SOURCE_LABELS = Object.freeze({
+  live_network: 'live network',
+  conversation_api: 'conversation API',
+  session_api: 'session API',
+  network: 'network',
+  dom: 'page (DOM)',
+  dom_heuristic: 'page heuristic',
+  model_db: 'limits table',
+  tokenizer: 'local tokenizer'
+});
+const sourceLabel = (s) => SOURCE_LABELS[s] || s;
+
 class ConfidenceEngine {
   /**
    * Evaluates context measurement confidence based on observable evidence quality.
@@ -1812,7 +1839,8 @@ class ConfidenceEngine {
       isNetworkActive = false,
       encoding = 'o200k_base',
       conflicts = [],
-      agreements // Fields confirmed by 2+ independent sources; undefined = legacy callers
+      agreements, // Fields confirmed by 2+ independent sources; undefined = legacy callers
+      evidence // Reconciled per-field evidence (value, source, evidenceType, confirmedBy); optional
     } = params;
 
     // 1. Authoritative exact system metadata (100% confidence)
@@ -1822,6 +1850,7 @@ class ConfidenceEngine {
         score: 1.0,
         percentage: 100,
         reasons: ['Authoritative usage metadata provided directly by system'],
+        highBlockers: [],
         factors: [
           { type: 'positive', text: 'Authoritative exact usage metadata provided directly by system' },
           { type: 'positive', text: `Verified model context limits (${modelDisplayName || 'Verified Model'})` }
@@ -1863,7 +1892,13 @@ class ConfidenceEngine {
     // --- Ground Truth Source Availability (Fallback Mode) ---
     if (completenessSource !== 'authoritative_api' && completenessSource !== 'in_flight_stream') {
       score -= 0.10;
-      factors.push({ type: 'negative', text: 'Authoritative conversation API unavailable; relying on DOM observation' });
+      factors.push({
+        type: 'negative',
+        // dom_complete is a chat with no saved conversation yet: there is nothing to read from the API
+        text: completenessSource === 'dom_complete'
+          ? 'No saved conversation to read from the API yet (new chat); counted from the page'
+          : 'Authoritative conversation API unavailable; relying on DOM observation'
+      });
     }
 
     // --- Factor B: Tokenization Reliability ---
@@ -1913,7 +1948,10 @@ class ConfidenceEngine {
           factors.push({ type: 'negative', text: 'ChatGPT plan tier unknown; context window limit cannot be verified' });
         } else if (effectivePlanKnown && !isLimitVerified) {
           score -= 0.10;
-          factors.push({ type: 'negative', text: `Context limit for plan ${planTier} is unverified by OpenAI documentation` });
+          factors.push({
+            type: 'negative',
+            text: `Context limit for plan ${planTier} is unverified by OpenAI documentation${contextLimit ? '' : ' (no published limit; window UNKNOWN)'}`
+          });
         } else if (effectivePlanKnown && isLimitVerified) {
           factors.push({ type: 'positive', text: `Verified ${planTier.toUpperCase()} plan context limit` });
         }
@@ -1940,7 +1978,40 @@ class ConfidenceEngine {
     // --- Factor H: Empty Conversation Detection ---
     if (messageCount === 0) {
       score = Math.min(score, 0.50);
-      factors.push({ type: 'negative', text: 'No conversation messages currently detected in DOM' });
+      factors.push({ type: 'negative', text: 'No conversation messages detected yet' });
+    }
+
+    // --- Provenance: which source supplied each value and which sources confirmed it ---
+    if (evidence) {
+      for (const [field, label] of [['model', 'Model'], ['plan', 'Plan'], ['turns', 'Turns']]) {
+        const e = evidence[field];
+        if (!e || e.value === null || e.value === undefined || e.source === 'unknown') continue; // Explained above as unknown
+        const confirmed = e.confirmedBy?.length ? `, confirmed by ${e.confirmedBy.map(sourceLabel).join(' + ')}` : ', single source';
+        factors.push({
+          // An inferred (ESTIMATED) value is a caveat, not support
+          type: e.evidenceType === 'ESTIMATED' ? 'negative' : 'positive',
+          text: `${label} ${e.value}: ${sourceLabel(e.source)} [${e.evidenceType}]${confirmed}`
+        });
+      }
+    }
+
+    // --- HIGH gate: every input of the displayed percentage must be backed by evidence ---
+    // Only checks the caller actually supplied (legacy callers without plan context skip plan/limit).
+    const highBlockers = [];
+    if (conflicts && conflicts.length > 0) highBlockers.push('sources disagree');
+    if (!isModelKnown) highBlockers.push('model unknown');
+    if (planTier !== undefined) {
+      const planKnown = isPlanKnown !== undefined ? isPlanKnown : (planTier !== 'unknown' && Boolean(planTier));
+      if (!planKnown || planTier === 'unknown') highBlockers.push('plan unknown');
+      else if (!contextLimit) highBlockers.push('context limit unknown');
+      else if (!isLimitVerified) highBlockers.push('context limit unverified');
+    }
+    if (['model', 'plan'].some(f => evidence?.[f]?.evidenceType === 'ESTIMATED')) highBlockers.push('value inferred, not reported');
+    if (isPartialConversation || completenessSource === 'dom_partial') highBlockers.push('conversation only partly read');
+    if (hasUnknownAttachments && attachmentCount > 0) highBlockers.push('attachment size unknown');
+    if (highBlockers.length > 0 && score >= 0.75) {
+      score = 0.74; // Keep the percentage inside the MEDIUM band so level and number agree
+      factors.push({ type: 'negative', text: `Not HIGH: ${highBlockers.join(', ')}` });
     }
 
     // Bound final score between 0.10 and 1.00
@@ -1966,6 +2037,7 @@ class ConfidenceEngine {
       percentage,
       reasons,
       factors,
+      highBlockers, // Why HIGH was not given (empty when nothing blocks it)
       observableConfidence: {
         level,
         score: finalScore,
@@ -2150,7 +2222,8 @@ class ContextCalculator {
       isNetworkActive: Boolean(input.networkHealth?.networkAvailable),
       encoding: model.encoding || 'o200k_base',
       conflicts: input.conflicts || [],
-      agreements: input.agreements
+      agreements: input.agreements,
+      evidence: input.evidence
     });
 
     const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);
@@ -2302,6 +2375,158 @@ class ContextCalculator {
       ]
     };
   }
+}
+
+
+  /**
+ * Context Monitor - Context Intelligence (health, consumers, growth, advice)
+ *
+ * Pure function over values the pipeline already measured. It never adds a number for hidden
+ * system / memory / tool context: that part is only ever named as "not counted".
+ *
+ * Health levels follow the same thresholds as the usage bar colours:
+ *   HEALTHY  < 50%     MODERATE 50-65%     HIGH 65-85%     CRITICAL >= 85%     UNKNOWN (no known window)
+ */
+
+const HealthLevel = Object.freeze({
+  HEALTHY: 'HEALTHY',
+  MODERATE: 'MODERATE',
+  HIGH: 'HIGH',
+  CRITICAL: 'CRITICAL',
+  UNKNOWN: 'UNKNOWN'
+});
+
+const HEALTH_THRESHOLDS = Object.freeze({ MODERATE: 50, HIGH: 65, CRITICAL: 85 });
+
+const LABELS = { HEALTHY: 'Healthy', MODERATE: 'Moderate', HIGH: 'High', CRITICAL: 'Critical', UNKNOWN: 'Unknown' };
+const RECENT_EXCHANGES = 5; // Growth uses the latest exchanges: the current pace, not the chat's average
+const fmt = (n) => Math.round(n).toLocaleString('en-US');
+
+/** @param {number|null} percentage */
+function healthLevel(percentage) {
+  if (percentage === null || percentage === undefined || Number.isNaN(percentage)) return HealthLevel.UNKNOWN;
+  if (percentage >= HEALTH_THRESHOLDS.CRITICAL) return HealthLevel.CRITICAL;
+  if (percentage >= HEALTH_THRESHOLDS.HIGH) return HealthLevel.HIGH;
+  if (percentage >= HEALTH_THRESHOLDS.MODERATE) return HealthLevel.MODERATE;
+  return HealthLevel.HEALTHY;
+}
+
+/**
+ * Splits the conversation into exchanges: a user message plus every reply / tool turn after it.
+ * @param {Array<{ role: string, tokens: number }>} messages
+ * @returns {number[]} tokens per exchange, oldest first
+ */
+function exchangeSizes(messages) {
+  const sizes = [];
+  for (const m of messages || []) {
+    if (m.role === 'user' || sizes.length === 0) sizes.push(0);
+    sizes[sizes.length - 1] += m.tokens || 0;
+  }
+  return sizes;
+}
+
+/**
+ * @param {Object} input
+ * @param {number|null} input.percentage
+ * @param {number} input.usedTokens
+ * @param {number|null} input.contextLimit
+ * @param {number|null} input.remainingTokens
+ * @param {Array<{ role: string, tokens: number, isStreaming?: boolean }>} input.messages Tokenized turns, in order
+ * @param {{ count: number, estimatedTokens: number, hasUnknown: boolean }} [input.attachments]
+ * @param {boolean} [input.isLowerBound] Turns may be missing (page text only)
+ * @param {number|null} [input.sessionStartTokens] Used tokens when this conversation was first measured on this page
+ * @returns {Object}
+ */
+function analyzeContext(input = {}) {
+  const {
+    percentage = null, usedTokens = 0, contextLimit = null, remainingTokens = null,
+    messages = [], attachments = { count: 0, estimatedTokens: 0, hasUnknown: false },
+    isLowerBound = false, sessionStartTokens = null
+  } = input;
+
+  const level = healthLevel(contextLimit ? percentage : null);
+
+  // ---- What is consuming the context (measured text, estimated images; unknown parts named only)
+  const byRole = { user: 0, assistant: 0, tool: 0 };
+  let largest = null;
+  messages.forEach((m, i) => {
+    const t = m.tokens || 0;
+    const role = m.role === 'user' ? 'user' : m.role === 'tool' ? 'tool' : 'assistant';
+    byRole[role] += t;
+    if (!largest || t > largest.tokens) largest = { index: i + 1, role, tokens: t };
+  });
+  const share = (t) => (usedTokens > 0 ? Math.round((t / usedTokens) * 100) : 0);
+  const consumers = [
+    { key: 'assistant', label: 'Replies', tokens: byRole.assistant, share: share(byRole.assistant), evidenceType: 'ESTIMATED' },
+    { key: 'user', label: 'Your messages', tokens: byRole.user, share: share(byRole.user), evidenceType: 'ESTIMATED' },
+    { key: 'tool', label: 'Tool output', tokens: byRole.tool, share: share(byRole.tool), evidenceType: 'ESTIMATED' },
+    { key: 'attachments', label: 'Images (estimated)', tokens: attachments.estimatedTokens || 0, share: share(attachments.estimatedTokens || 0), evidenceType: 'ESTIMATED' }
+  ].filter(c => c.tokens > 0).sort((a, b) => b.tokens - a.tokens);
+  const largestTurn = largest && largest.tokens > 0 ? { ...largest, share: share(largest.tokens) } : null;
+
+  // ---- Growth: tokens per exchange at the current pace, and exchanges left at that pace
+  const sizes = exchangeSizes(messages);
+  const recent = sizes.slice(-RECENT_EXCHANGES);
+  let growth;
+  if (sizes.length < 2) {
+    growth = { available: false, reason: 'Needs at least 2 exchanges', exchanges: sizes.length };
+  } else {
+    const perExchange = recent.reduce((s, x) => s + x, 0) / recent.length;
+    growth = {
+      available: true,
+      evidenceType: 'ESTIMATED',
+      exchanges: sizes.length,
+      basis: recent.length,
+      perExchange: Math.round(perExchange),
+      lastExchange: sizes[sizes.length - 1],
+      exchangesLeft: remainingTokens !== null && contextLimit && perExchange > 0 ? Math.floor(remainingTokens / perExchange) : null
+    };
+  }
+  const sessionGrowth = sessionStartTokens !== null && sessionStartTokens !== undefined ? Math.max(0, usedTokens - sessionStartTokens) : null;
+
+  // ---- Warnings (most important first)
+  const warnings = [];
+  if (level === HealthLevel.CRITICAL) {
+    warnings.push({ level: 'critical', text: `${Math.round(percentage)}% of the window is used. When it fills, the model starts losing the earliest messages.` });
+  } else if (level === HealthLevel.HIGH) {
+    warnings.push({ level: 'warn', text: `${Math.round(percentage)}% of the window is used. Plan to wrap up or summarize.` });
+  }
+  // (The lower-bound case already has its own warning in the widget; the advice below adds the action.)
+  if (attachments.hasUnknown && attachments.count > 0) warnings.push({ level: 'info', text: 'Uploaded files are not counted: their token size is not visible.' });
+  if (level === HealthLevel.UNKNOWN && usedTokens > 0) warnings.push({ level: 'info', text: 'Context window unknown for this model or plan, so health cannot be judged.' });
+
+  // ---- Advice: one clear action
+  const pace = growth.available && growth.exchangesLeft !== null
+    ? `about ${fmt(growth.exchangesLeft)} more exchange${growth.exchangesLeft === 1 ? '' : 's'} at the current pace (~${fmt(growth.perExchange)} tokens each)`
+    : null;
+  const bigTurn = largestTurn && largestTurn.share >= 25 && messages.length > 2
+    ? ` The largest single ${largestTurn.role === 'user' ? 'message you sent' : largestTurn.role === 'tool' ? 'tool result' : 'reply'} takes ${largestTurn.share}% (${fmt(largestTurn.tokens)} tokens); avoid repeating large pastes.`
+    : '';
+  let advice;
+  if (level === HealthLevel.CRITICAL) {
+    advice = { title: 'Start a new chat soon', text: `Only ${fmt(remainingTokens)} tokens left${pace ? `, ${pace}` : ''}. Ask for a summary of this chat and continue in a new one.${bigTurn}` };
+  } else if (level === HealthLevel.HIGH) {
+    advice = { title: 'Plan a wrap-up', text: `${pace ? `Room for ${pace}.` : `${fmt(remainingTokens)} tokens left.`} Consider a summary and a fresh chat before it fills.${bigTurn}` };
+  } else if (level === HealthLevel.MODERATE) {
+    advice = { title: 'Room left', text: `${pace ? `Room for ${pace}.` : `${fmt(remainingTokens)} tokens left.`}${bigTurn}` };
+  } else if (level === HealthLevel.HEALTHY) {
+    advice = { title: 'Plenty of room', text: pace ? `Room for ${pace}.` : `${fmt(remainingTokens ?? 0)} tokens left.` };
+  } else {
+    advice = { title: 'Window unknown', text: `${fmt(usedTokens)} tokens counted. Without a known window, remaining room cannot be estimated.` };
+  }
+  if (isLowerBound) advice.text += ' Press Refresh to read the full conversation.';
+
+  return {
+    health: { level, label: LABELS[level], percentage: contextLimit ? percentage : null, isLowerBound: Boolean(isLowerBound) },
+    warnings,
+    consumers,
+    largestTurn,
+    growth,
+    sessionGrowth,
+    advice,
+    // Stated, never quantified
+    notCounted: 'Hidden instructions, memory and tool definitions are not counted, so the real remaining room is lower.'
+  };
 }
 
 
@@ -2799,6 +3024,9 @@ class ConversationClient {
     this.fetchSeq = new Map(); // conversationId -> latest request number; older responses never overwrite newer
     this.session = null; // { ok, status, planType, fetchedAt } - safe to expose, holds no token
     this._sessionPromise = null;
+    this._normalized = new WeakMap(); // raw payload -> normalized result (payloads are never mutated)
+    this.onRevalidated = null; // (conversationId) => void, when a background refresh brought new data
+    this.stats = { downloads: 0, cacheHits: 0, staleServed: 0, normalizeReused: 0 };
   }
 
   _origin() {
@@ -2912,7 +3140,15 @@ class ConversationClient {
     if (!fetchOptions.force && this.cache.has(conversationId)) {
       const cached = this.cache.get(conversationId);
       if (now - cached.timestamp < this.cacheTtlMs) {
+        this.stats.cacheHits++;
         return { success: true, data: cached.data, fromCache: true };
+      }
+      // Stale-while-revalidate: answer now with the copy we have and refresh it in the background,
+      // so an analysis pass never waits on a full conversation download just because time passed
+      if (fetchOptions.staleWhileRevalidate) {
+        this.stats.staleServed++;
+        this._revalidate(conversationId, cached.data);
+        return { success: true, data: cached.data, fromCache: true, stale: true };
       }
     }
 
@@ -2947,10 +3183,12 @@ class ConversationClient {
 
         // /backend-api needs the session bearer token; cookies alone return 401
         await this.getSession();
+        this.stats.downloads++;
         let response = await doFetch();
         if (response.status === 401) {
           // Token expired: refresh the session once and retry
           await this.getSession({ force: true });
+          this.stats.downloads++;
           response = await doFetch();
         }
 
@@ -3021,6 +3259,23 @@ class ConversationClient {
     });
     this.activeFetches.set(conversationId, resultPromise);
     return resultPromise;
+  }
+
+  /**
+   * Background refresh of a stale cached copy (one at a time per conversation). Reports only when
+   * the saved conversation actually changed (another tab/device, an edit), so callers re-run then.
+   * @private
+   */
+  _revalidate(conversationId, previous) {
+    if (this.activeFetches.has(conversationId)) return; // A read is already on its way
+    this.fetchConversation(conversationId, { force: true }).then(result => {
+      if (!result.success || result.fromCapture || !result.data || result.data === previous) return;
+      const changed = !previous ||
+        result.data.current_node !== previous.current_node ||
+        result.data.update_time !== previous.update_time ||
+        Object.keys(result.data.mapping || {}).length !== Object.keys(previous.mapping || {}).length;
+      if (changed && typeof this.onRevalidated === 'function') this.onRevalidated(conversationId);
+    }).catch(() => {});
   }
 
   /**
@@ -3162,6 +3417,18 @@ class ConversationClient {
    * @returns {{ conversationId: string, title: string, modelSlug: string|null, messages: Array<Object>, attachments: Object }}
    */
   normalizeConversation(conversationPayload) {
+    // Same payload object -> same result: re-walking a long tree on every pass was wasted work
+    if (conversationPayload && typeof conversationPayload === 'object' && this._normalized.has(conversationPayload)) {
+      this.stats.normalizeReused++;
+      return this._normalized.get(conversationPayload);
+    }
+    const result = this._normalizeUncached(conversationPayload);
+    if (conversationPayload && typeof conversationPayload === 'object') this._normalized.set(conversationPayload, result);
+    return result;
+  }
+
+  /** @private */
+  _normalizeUncached(conversationPayload) {
     if (!conversationPayload || !conversationPayload.mapping) {
       return {
         conversationId: null,
@@ -3298,6 +3565,31 @@ class ConversationClient {
 class MessageExtractor {
   constructor(options = {}) {
     this.selectors = options.selectors || {};
+    // element -> { raw: element count + textContent, text: cleaned text }. Cleaning deep-clones the node
+    // and queries it many times; visible text cannot change without changing one of the two, so an
+    // equal key means the cleaned text is still valid. Entries die with their elements.
+    this._textCache = new WeakMap();
+    this.stats = { cleaned: 0, reused: 0 };
+  }
+
+  /**
+   * cleanElementText with reuse for unchanged elements (same textContent = same visible text).
+   * @param {HTMLElement} element
+   * @returns {string}
+   */
+  _cleanText(element) {
+    // Text plus element count: structure-only changes (a <br>, new block) alter innerText line breaks
+    const elements = typeof element.getElementsByTagName === 'function' ? element.getElementsByTagName('*').length : -1;
+    const raw = `${elements}|${element.textContent || ''}`;
+    const hit = this._textCache.get(element);
+    if (hit && hit.raw === raw) {
+      this.stats.reused++;
+      return hit.text;
+    }
+    const text = this.cleanElementText(element);
+    this._textCache.set(element, { raw, text });
+    this.stats.cleaned++;
+    return text;
   }
 
   /**
@@ -3437,7 +3729,7 @@ class MessageExtractor {
                         turnEl.querySelector('div[class*="prose"]') ||
                         turnEl;
 
-      const text = this.cleanElementText(contentEl);
+      const text = this._cleanText(contentEl);
       if (!text) continue;
 
       // Prefer ChatGPT's message id so DOM turns line up with API / network turns
@@ -4308,93 +4600,122 @@ function toWidgetState(s, opts = {}) {
  * Context Monitor - Context Widget (provider-neutral UI)
  *
  * Renders the normalized view state from widget-state.js (toWidgetState). It knows nothing about
- * any AI site: a provider adapter supplies `findInput()` (the chat input element), a name, and
- * `onRefresh()` (re-read the conversation now; may return a promise).
+ * any AI site: a provider adapter supplies a name, `findInput()` (the chat input element),
+ * `onRefresh()` (re-read the conversation now; may return a promise) and `getDiagnostics()`.
+ * Everything lives in a shadow root, so the host page's CSS cannot reach it and ours never leaks out.
  *
- * Components (each builds its DOM once and exposes update(vm), so updates only change text:
- * no flicker, no lost expand state, and page-derived strings never become HTML):
- *   ContextSummary  - collapsed card: percentage, ConfidenceBadge, refresh, toggle, UsageProgress, used/total, ModelInfo
- *   ContextDetails  - expanded sections, top to bottom: breakdown (+ used/remaining/window),
- *                     confidence dropdown (closed by default) + EvidenceList, diagnostics, model
- * The percentage and progress bar live only in the summary card.
+ * One card, bottom-anchored. Expanding opens the details ABOVE the summary, so the summary (the
+ * main element) never moves and the width never changes:
+ *
+ *   ContextDetails (open only)  Breakdown (+ used / remaining / window)
+ *                               Confidence dropdown (closed by default) + all evidence
+ *                               Diagnostics (warning, Copy diagnostics)
+ *                               Model (provider, model · family, plan, source, turns)
+ *   ContextSummary              [percentage] [confidence]            [refresh] [expand]
+ *                               progress bar
+ *                               used / total tokens
+ *                               model · family
+ *
+ * The percentage is shown once (summary only). Components build their DOM once; update(vm) writes
+ * only what changed, so repeated identical updates cause zero DOM mutations (no flicker, no lost
+ * focus/scroll/open state), and page-derived strings are only ever assigned as text, never HTML.
  */
 
 const STYLES = `
   :host { all: initial; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   .root {
-    --primary: #6366F1; --accent: #06B6D4;
-    --bg: #F8FAFC; --card: #FFFFFF; --text: #0F172A; --muted: #64748B; --line: #E2E8F0; --track: #E2E8F0;
-    --ok: #059669; --warn: #D97706; --bad: #DC2626; --shadow: 0 4px 16px rgba(15, 23, 42, 0.10);
-    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --primary: #6366F1; --accent: #06B6D4; --primary-text: #4F46E5;
+    --surface: #FFFFFF; --subtle: #F8FAFC; --text: #0F172A; --muted: #64748B; --line: #E2E8F0; --track: #EEF2F7;
+    --ok: #059669; --warn: #D97706; --bad: #DC2626;
+    --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px rgba(15, 23, 42, .10);
+    font: 12.5px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-variant-numeric: tabular-nums;
     color: var(--text);
-    display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    color-scheme: light; /* native scrollbars and focus rings follow the widget theme */
+    -webkit-font-smoothing: antialiased;
   }
   .root.dark {
-    --bg: #0F172A; --card: #111827; --text: #F1F5F9; --muted: #94A3B8; --line: #1F2937; --track: #1E293B;
-    --ok: #34D399; --warn: #FBBF24; --bad: #F87171; --shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+    --primary-text: #A5B4FC;
+    --surface: #0F172A; --subtle: #111C33; --text: #E2E8F0; --muted: #94A3B8; --line: #1E293B; --track: #1E293B;
+    --ok: #34D399; --warn: #FBBF24; --bad: #F87171;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px rgba(0, 0, 0, .45);
   }
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
   }
 
-  /* ContextSummary (collapsed) */
-  .summary { padding: 10px 12px; min-width: 200px; }
-  .top { display: flex; align-items: center; gap: 8px; }
-  .pct { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.01em; }
-  .pct small { font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted); margin-left: 4px; }
+  /* Summary (always visible) */
+  .summary { padding: 12px 14px 11px; }
+  .top { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .pct { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap;
+    font-size: 26px; font-weight: 700; line-height: 1; letter-spacing: -.02em; color: var(--primary-text); }
+  .pct .unit { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--muted); }
+  .pct.warn { color: var(--warn); } .pct.bad { color: var(--bad); }
   .spacer { flex: 1; }
   .badge {
     display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; letter-spacing: .06em;
     padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+    background: var(--subtle);
   }
   .badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: block; }
   .badge.HIGH { color: var(--ok); } .badge.MEDIUM { color: var(--warn); } .badge.LOW { color: var(--muted); }
   .toggle {
-    all: unset; cursor: pointer; width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
-    color: var(--muted); transition: background .15s ease;
+    all: unset; cursor: pointer; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+    color: var(--muted); transition: background .15s ease, color .15s ease;
   }
   .toggle:hover { background: var(--track); color: var(--text); }
   .toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
   .toggle:disabled { cursor: default; opacity: .6; }
-  .open .toggle.chev { transform: rotate(180deg); }
+  .toggle.chev svg { transition: transform .2s ease; }
+  .open .toggle.chev svg { transform: rotate(180deg); }
   .refreshing svg { animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .progress { height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; margin: 8px 0 7px; }
+  .progress { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; margin: 10px 0 8px; }
   .progress b { display: block; height: 100%; width: 0; border-radius: inherit;
-    background: linear-gradient(90deg, var(--primary), var(--accent)); transition: width .3s ease; }
+    background: linear-gradient(90deg, var(--primary), var(--accent)); transition: width .35s ease; }
   .progress.warn b { background: var(--warn); } .progress.bad b { background: var(--bad); }
-  .tokens { font-weight: 600; }
-  .model { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tokens { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tokens .of { color: var(--muted); font-weight: 500; }
+  .model { margin-top: 2px; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* ContextDetails (expanded) */
-  .details { display: none; flex-direction: column; gap: 8px; overflow: auto; max-height: var(--details-max, 60vh);
-    padding: 2px; margin: -2px; }
-  .open .details { display: flex; }
-  .section { padding: 10px 12px; }
+  /* Details (open only), above the summary inside the same card */
+  .details { display: none; overflow: auto; overscroll-behavior: contain; max-height: var(--details-max, 60vh);
+    border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+  .open .details { display: block; }
+  .section { padding: 11px 14px; }
+  .section + .section { border-top: 1px solid var(--line); }
   .h { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-  .divider { border-top: 1px solid var(--line); margin: 6px 0; }
+  .divider { border-top: 1px dashed var(--line); margin: 6px 0; }
   .conf > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; }
   .conf > summary::-webkit-details-marker { display: none; }
   .conf > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
-  .conf > summary svg { margin-left: auto; color: var(--muted); transition: transform .15s ease; }
+  .conf > summary svg { margin-left: auto; color: var(--muted); transition: transform .2s ease; }
   .conf[open] > summary svg { transform: rotate(180deg); }
   .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 2px 0; }
   .row .k { color: var(--muted); white-space: nowrap; }
-  .row .v { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  .row .v { text-align: right; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
   .tag { font-size: 9px; font-weight: 700; letter-spacing: .05em; padding: 1px 5px; border-radius: 4px; margin-left: 6px;
     border: 1px solid var(--line); color: var(--muted); vertical-align: 1px; white-space: nowrap; }
+  .tag:empty { display: none; }
   .tag.VERIFIED { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
-  .evidence { list-style: none; display: flex; flex-direction: column; gap: 3px; margin-top: 6px; font-size: 12px; }
-  .evidence li { display: flex; gap: 6px; }
+  .evidence { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+  .evidence li { display: flex; gap: 7px; align-items: baseline; }
+  .evidence li span:last-child { min-width: 0; overflow-wrap: anywhere; }
   .evidence .y { color: var(--ok); } .evidence .n { color: var(--warn); }
   .warn-text { color: var(--warn); font-size: 12px; margin-bottom: 8px; }
-  .btn { all: unset; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--primary);
-    border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
+  .warn-text:empty { display: none; }
+  .btn { all: unset; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--primary-text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; background: var(--subtle); }
   .btn:hover { border-color: var(--primary); }
   .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
-  .fine { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .fine { color: var(--muted); font-size: 11px; margin-top: 8px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 `;
 
 const fmtK = (n) => {
@@ -4412,6 +4733,11 @@ function h(tag, cls, parent, text) {
   if (parent) parent.appendChild(n);
   return n;
 }
+
+/** Writes only when the value changed: identical updates cause no DOM mutation. */
+const setText = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+const setClass = (node, cls) => { if (node.className !== cls) node.className = cls; };
+const setAttr = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
 
 /** Stroked 16x16 SVG icon from one path. */
 function icon(parent, d) {
@@ -4436,23 +4762,27 @@ const CHEVRON_UP = 'M4 10l4-4 4 4';
 const CHEVRON_DOWN = 'M4 6l4 4 4-4';
 const REFRESH = 'M13 8a5 5 0 1 1-1.5-3.55M13 2.5v3h-3';
 
+const tone = (p) => (p === null ? '' : p >= 85 ? 'bad' : p >= 65 ? 'warn' : '');
+
 /** Progress bar; tone switches to warn/bad near the limit. */
 function UsageProgress(parent) {
   const el = h('div', 'progress', parent);
   el.setAttribute('role', 'progressbar');
   el.setAttribute('aria-valuemin', '0');
   el.setAttribute('aria-valuemax', '100');
+  el.setAttribute('aria-label', 'Context used');
   const fill = h('b', null, el);
   return {
     el,
     update(vm) {
       const p = vm.percentage;
-      el.style.display = p === null ? 'none' : '';
+      const display = p === null ? 'none' : '';
+      if (el.style.display !== display) el.style.display = display;
       if (p === null) return;
-      fill.style.width = `${Math.min(100, p)}%`;
-      el.classList.toggle('warn', p >= 65 && p < 85);
-      el.classList.toggle('bad', p >= 85);
-      el.setAttribute('aria-valuenow', String(p));
+      const width = `${Math.min(100, p)}%`;
+      if (fill.style.width !== width) fill.style.width = width;
+      setClass(el, `progress ${tone(p)}`.trim());
+      setAttr(el, 'aria-valuenow', String(p));
     }
   };
 }
@@ -4464,29 +4794,24 @@ function ConfidenceBadge(parent, withScore = false) {
   const label = h('span', null, el);
   return {
     update(vm) {
-      el.style.display = vm.ready === false ? 'none' : ''; // No confidence claim before there is data
-      el.className = `badge ${vm.confidenceLevel}`;
-      label.textContent = withScore ? `${vm.confidence}% ${vm.confidenceLevel}` : vm.confidenceLevel;
-      el.title = `Measurement confidence ${vm.confidence}%`;
+      const display = vm.ready === false ? 'none' : ''; // No confidence claim before there is data
+      if (el.style.display !== display) el.style.display = display;
+      setClass(el, `badge ${vm.confidenceLevel}`);
+      setText(label, withScore ? `${vm.confidence}% ${vm.confidenceLevel}` : vm.confidenceLevel);
+      setAttr(el, 'title', `Measurement confidence ${vm.confidence}%`);
     }
   };
 }
 
-/** "GPT-5.6 · Instant" (+ plan when requested). */
-function ModelInfo(parent, withPlan = false) {
-  const el = h('div', 'model', parent);
-  return {
-    update(vm) {
-      el.textContent = [vm.model, vm.modelFamily, withPlan && vm.plan ? `${vm.plan} plan` : null].filter(Boolean).join(' · ');
-      el.title = `${vm.provider}: ${el.textContent}`;
-    }
-  };
-}
+/** "GPT-5.6 · Instant" */
+const modelText = (vm) => [vm.model, vm.modelFamily].filter(Boolean).join(' · ');
 
 function ContextSummary(parent, onToggle, onRefresh) {
-  const el = h('div', 'card summary', parent);
+  const el = h('div', 'summary', parent);
   const top = h('div', 'top', el);
   const pct = h('span', 'pct', top);
+  const pctNum = h('span', 'num', pct);
+  const pctUnit = h('span', 'unit', pct);
   const confidence = ConfidenceBadge(top);
   h('span', 'spacer', top);
 
@@ -4514,40 +4839,77 @@ function ContextSummary(parent, onToggle, onRefresh) {
   toggle.setAttribute('aria-label', 'Show context details');
   toggle.setAttribute('aria-expanded', 'false');
   toggle.addEventListener('click', onToggle);
+
   const progress = UsageProgress(el);
   const tokens = h('div', 'tokens', el);
-  const model = ModelInfo(el);
+  const used = h('span', null, tokens);
+  const of = h('span', 'of', tokens);
+  const model = h('div', 'model', el);
   return {
     el,
     setExpanded(open) {
-      toggle.setAttribute('aria-expanded', String(open));
-      toggle.setAttribute('aria-label', open ? 'Hide context details' : 'Show context details');
+      setAttr(toggle, 'aria-expanded', String(open));
+      setAttr(toggle, 'aria-label', open ? 'Hide context details' : 'Show context details');
     },
     update(vm) {
-      pct.textContent = '';
       if (!vm.ready) {
-        pct.textContent = '…';
+        setText(pctNum, '…');
+        setText(pctUnit, '');
       } else if (vm.percentage === null) {
-        pct.append(fmtK(vm.usedTokens));
-        h('small', null, pct, 'TOKENS');
+        setText(pctNum, fmtK(vm.usedTokens));
+        setText(pctUnit, 'TOKENS');
       } else {
-        pct.append(`${fmtPct(vm.percentage, vm.usedTokens)}%`);
-        h('small', null, pct, 'USED');
+        setText(pctNum, `${fmtPct(vm.percentage, vm.usedTokens)}%`);
+        setText(pctUnit, 'USED');
       }
+      setClass(pct, `pct ${vm.ready ? tone(vm.percentage) : ''}`.trim());
       confidence.update(vm);
       progress.update(vm);
-      tokens.textContent = !vm.ready ? 'Reading conversation…'
-        : vm.contextLimit ? `${fmtK(vm.usedTokens)} / ${fmtK(vm.contextLimit)}`
-        : `${fmtK(vm.usedTokens)} / window unknown${vm.plan ? '' : ' (plan not detected)'}`;
-      model.update(vm);
+      if (!vm.ready) {
+        setText(used, 'Reading conversation…');
+        setText(of, '');
+      } else if (vm.contextLimit) {
+        setText(used, fmtK(vm.usedTokens));
+        setText(of, ` / ${fmtK(vm.contextLimit)} tokens`);
+      } else {
+        setText(used, fmtK(vm.usedTokens));
+        setText(of, ` / window unknown${vm.plan ? '' : ' (plan not detected)'}`);
+      }
+      setText(model, modelText(vm));
+      setAttr(model, 'title', `${vm.provider}: ${model.textContent}`);
     }
   };
 }
 
+/** Label/value rows (optionally tagged). Rebuilt only when the rows actually change. */
+function RowList(parent) {
+  const el = h('div', null, parent);
+  let signature = null;
+  return {
+    update(rows) {
+      const next = JSON.stringify(rows);
+      if (next === signature) return;
+      signature = next;
+      el.textContent = '';
+      for (const r of rows) {
+        const row = h('div', 'row', el);
+        h('span', 'k', row, r.label);
+        const v = h('span', 'v', row, r.value);
+        if (r.tag) h('span', `tag ${r.tag}`, v, r.tag);
+      }
+    }
+  };
+}
+
+/** Every confidence reason / evidence line, in engine order. Rebuilt only when the list changes. */
 function EvidenceList(parent) {
   const el = h('ul', 'evidence', parent);
+  let signature = null;
   return {
     update(vm) {
+      const next = JSON.stringify(vm.evidence);
+      if (next === signature) return;
+      signature = next;
       el.textContent = '';
       for (const e of vm.evidence) {
         const li = h('li', null, el);
@@ -4561,31 +4923,20 @@ function EvidenceList(parent) {
 function ContextDetails(parent, getDiagnostics) {
   const el = h('div', 'details', parent);
   const section = (title) => {
-    const s = h('section', 'card section', el);
+    const s = h('section', 'section', el);
     h('div', 'h', s, title);
     return s;
   };
-  const rowIn = (s, label) => {
-    const r = h('div', 'row', s);
-    h('span', 'k', r, label);
-    return h('span', 'v', r);
-  };
-  const tagged = (node, text, tag) => {
-    node.textContent = text;
-    if (tag) h('span', `tag ${tag}`, node, tag);
-  };
 
   // Breakdown (top): what the used tokens are made of, then the exact totals.
-  // The percentage and bar are in the summary card only, so they are not repeated here.
+  // The percentage and bar are in the summary only, so they are not repeated here.
   const brk = section('Breakdown');
-  const brkRows = h('div', null, brk);
+  const parts = RowList(brk);
   h('div', 'divider', brk);
-  const usedRow = rowIn(brk, 'Used');
-  const leftRow = rowIn(brk, 'Remaining');
-  const limitRow = rowIn(brk, 'Window');
+  const totals = RowList(brk);
 
   // Confidence: native dropdown, closed by default; open state survives updates (DOM is built once)
-  const conf = h('details', 'card section conf', el);
+  const conf = h('details', 'section conf', el);
   const confHead = h('summary', 'h', conf);
   h('span', null, confHead, 'Confidence');
   const badge = ConfidenceBadge(confHead, true);
@@ -4609,52 +4960,62 @@ function ContextDetails(parent, getDiagnostics) {
 
   // Model (bottom)
   const mdl = section('Model');
-  const providerRow = rowIn(mdl, 'Provider');
-  const modelRow = rowIn(mdl, 'Model');
-  const planRow = rowIn(mdl, 'Plan');
-  const sourceRow = rowIn(mdl, 'Source');
-  const turnsRow = rowIn(mdl, 'Turns');
+  const modelRows = RowList(mdl);
 
   return {
     el,
     update(vm) {
       // While loading, show dashes rather than zeros
       const tokens = (n) => (vm.ready === false || n === null ? '—' : `${n.toLocaleString()} tokens`);
-      usedRow.textContent = tokens(vm.usedTokens);
-      leftRow.textContent = tokens(vm.remainingTokens);
-      tagged(limitRow, vm.contextLimit ? `${vm.contextLimit.toLocaleString()} tokens` : 'Unknown', vm.limitStatus);
-
-      providerRow.textContent = vm.provider;
-      modelRow.textContent = [vm.model, vm.modelFamily].filter(Boolean).join(' · ');
-      planRow.textContent = vm.plan || 'Unknown';
-      sourceRow.textContent = vm.source || '—';
-      turnsRow.textContent = vm.ready === false ? '—' : String(vm.turns);
-
-      brkRows.textContent = '';
-      for (const b of vm.breakdown) tagged(rowIn(brkRows, b.label), b.value, b.tag);
+      parts.update(vm.breakdown.map(b => ({ label: b.label, value: b.value, tag: b.tag || null })));
+      totals.update([
+        { label: 'Used', value: tokens(vm.usedTokens), tag: null },
+        { label: 'Remaining', value: tokens(vm.remainingTokens), tag: null },
+        { label: 'Window', value: vm.contextLimit ? `${vm.contextLimit.toLocaleString()} tokens` : 'Unknown', tag: vm.limitStatus || null }
+      ]);
 
       badge.update(vm);
       evidence.update(vm);
 
-      warn.textContent = vm.warning || '';
-      warn.style.display = vm.warning ? '' : 'none';
+      setText(warn, vm.warning || '');
+
+      modelRows.update([
+        { label: 'Provider', value: vm.provider, tag: null },
+        { label: 'Model', value: modelText(vm), tag: null },
+        { label: 'Plan', value: vm.plan || 'Unknown', tag: null },
+        { label: 'Source', value: vm.source || '—', tag: null },
+        { label: 'Turns', value: vm.ready === false ? '—' : String(vm.turns), tag: null }
+      ]);
     }
   };
 }
 
+const WIDTH = 300; // One width, collapsed or open: expanding never shifts the card sideways
+const GAP = 16;
+
 class ContextWidget {
   /**
-   * @param {{ provider?: string, findInput?: () => Element|null, onRefresh?: () => any }} [adapter]
-   *   Provider adapter: display name, a way to find the chat input, and a refresh action. Nothing else is site-specific.
+   * @param {{ provider?: string, findInput?: () => Element|null, onRefresh?: () => any, getDiagnostics?: () => Object }} [adapter]
+   *   Provider adapter: display name, a way to find the chat input, a refresh action and the
+   *   diagnostics source. Nothing else is site-specific.
    */
   constructor(adapter = {}) {
-    this.adapter = { provider: adapter.provider || 'AI', findInput: adapter.findInput || (() => null), onRefresh: adapter.onRefresh || (() => {}) };
+    this.adapter = {
+      provider: adapter.provider || 'AI',
+      findInput: adapter.findInput || (() => null),
+      onRefresh: adapter.onRefresh || (() => {}),
+      // Copy diagnostics source; the provider can check it still matches what is on screen
+      getDiagnostics: adapter.getDiagnostics || (() => this.latestState?.diagnostics)
+    };
     this.hostElement = null;
     this.shadowRoot = null;
     this.isExpanded = false;
     this.isVisible = true;
     this.latestState = null;
     this.parts = null;
+    this._raf = null;
+    this._observedInput = null;
+    this._resizeObserver = null;
   }
 
   mount() {
@@ -4663,21 +5024,40 @@ class ContextWidget {
 
     this.hostElement = document.createElement('div');
     this.hostElement.id = 'chatgpt-context-monitor-host';
-    this.hostElement.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;';
+    // Own stacking/paint context so the page's layout and styles cannot leak in or be disturbed
+    this.hostElement.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;contain:layout style;';
     this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
     h('style', null, this.shadowRoot, STYLES);
 
     const root = h('div', 'root', this.shadowRoot);
-    const details = ContextDetails(root, () => this.latestState?.diagnostics);
-    const summary = ContextSummary(root, () => {
+    const card = h('div', 'card', root);
+    const details = ContextDetails(card, () => this.adapter.getDiagnostics());
+    const summary = ContextSummary(card, () => {
       this.isExpanded = !this.isExpanded;
       this.render();
     }, () => this.adapter.onRefresh());
-    this.parts = { root, details, summary };
+    this.parts = { root, card, details, summary };
 
     (document.body || document.documentElement).appendChild(this.hostElement);
-    window.addEventListener('resize', () => this._position());
+    window.addEventListener('resize', () => this._schedulePosition());
+    if (typeof ResizeObserver !== 'undefined') {
+      // The chat input grows while typing; keep clear of it without waiting for a data update
+      this._resizeObserver = new ResizeObserver(() => this._schedulePosition());
+    }
+    // Follow the site's light/dark switch immediately (sites flip a class/attribute on <html>/<body>)
+    const themeWatch = new MutationObserver(() => this._applyTheme());
+    for (const node of [document.documentElement, document.body].filter(Boolean)) {
+      themeWatch.observe(node, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme'] });
+    }
+    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => this._applyTheme());
     this.render();
+  }
+
+  /** Light/dark from the page itself; writes only when it flips. */
+  _applyTheme() {
+    if (!this.parts) return;
+    const { root } = this.parts;
+    setClass(root, ['root', this._isDarkPage() ? 'dark' : '', this.isExpanded ? 'open' : ''].filter(Boolean).join(' '));
   }
 
   /** @param {Object} viewState Output of toWidgetState() */
@@ -4691,11 +5071,11 @@ class ContextWidget {
 
   render() {
     if (!this.hostElement || !this.parts) return;
-    this.hostElement.style.display = this.isVisible ? '' : 'none';
-    const { root, details, summary } = this.parts;
+    const display = this.isVisible ? '' : 'none';
+    if (this.hostElement.style.display !== display) this.hostElement.style.display = display;
+    const { details, summary } = this.parts;
 
-    root.classList.toggle('dark', this._isDarkPage());
-    root.classList.toggle('open', this.isExpanded);
+    this._applyTheme();
     summary.setExpanded(this.isExpanded);
 
     const vm = this.latestState || { ready: false, percentage: null, usedTokens: 0, evidence: [], breakdown: [], confidenceLevel: 'LOW', confidence: 0, provider: this.adapter.provider, model: 'Detecting…' };
@@ -4726,6 +5106,11 @@ class ContextWidget {
   _composerRect() {
     const input = this.adapter.findInput();
     if (!input || !input.getBoundingClientRect) return null;
+    if (this._resizeObserver && input !== this._observedInput) {
+      if (this._observedInput) this._resizeObserver.unobserve(this._observedInput);
+      this._resizeObserver.observe(input);
+      this._observedInput = input;
+    }
     let box = input;
     let rect = input.getBoundingClientRect();
     for (let el = input.parentElement; el && el !== document.body; el = el.parentElement) {
@@ -4738,44 +5123,56 @@ class ContextWidget {
     return box && rect.width > 0 ? rect : null;
   }
 
-  /** Beside the composer when there is room, otherwise right-aligned just above it; corner fallback. */
+  /** Coalesces resize bursts into one layout pass per frame. */
+  _schedulePosition() {
+    if (this._raf) return;
+    const run = () => { this._raf = null; this._position(); };
+    this._raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16);
+  }
+
+  /**
+   * Beside the composer when there is room, otherwise right-aligned just above it; corner fallback.
+   * The placement depends only on the page layout (never on open/closed), and styles are written only
+   * when they change, so updates and expanding never make the card jump.
+   */
   _position() {
     if (!this.hostElement || !this.parts) return;
-    const s = this.hostElement.style;
-    const root = this.parts.root;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const COLLAPSED = 260;
-    const EXPANDED = 360;
+    const width = Math.max(200, Math.min(WIDTH, vw - 24));
     const r = this._composerRect();
-    const besideRoom = r ? vw - r.right - 32 : 0;
-    let width;
-    let bottom = 16;
+    let left = 'auto';
+    let right = '12px';
+    let bottom = GAP;
+    let placement = 'corner';
 
-    // The side is chosen from the collapsed width only, so expanding never makes the widget jump
-    if (r && r.top > 80 && besideRoom >= COLLAPSED) {
-      width = this.isExpanded ? Math.min(EXPANDED, besideRoom) : COLLAPSED;
-      s.left = `${Math.round(r.right + 16)}px`;
-      s.right = 'auto';
+    if (r && r.top > 80 && vw - r.right - 2 * GAP >= width) {
+      placement = 'beside';
+      left = `${Math.round(r.right + GAP)}px`;
+      right = 'auto';
       bottom = Math.max(8, Math.round(vh - r.bottom));
     } else if (r && r.top > 80) {
-      width = Math.min(this.isExpanded ? EXPANDED : COLLAPSED, vw - 24);
-      s.left = 'auto';
-      s.right = `${Math.max(12, Math.round(vw - r.right))}px`;
+      placement = 'above';
+      right = `${Math.max(12, Math.round(vw - r.right))}px`;
       bottom = Math.max(8, Math.round(vh - r.top + 8));
-    } else {
-      width = Math.min(this.isExpanded ? EXPANDED : COLLAPSED, vw - 24);
-      s.left = 'auto';
-      s.right = '12px';
     }
-    root.style.width = `${Math.max(180, width)}px`;
-    s.bottom = `${bottom}px`;
-    // Expanded details grow upward above the summary card; keep them inside the viewport
+
+    const s = this.hostElement.style;
+    if (s.left !== left) s.left = left;
+    if (s.right !== right) s.right = right;
+    if (s.bottom !== `${bottom}px`) s.bottom = `${bottom}px`;
+    const w = `${width}px`;
+    if (this.parts.root.style.width !== w) this.parts.root.style.width = w;
+    if (this.hostElement.dataset.placement !== placement) this.hostElement.dataset.placement = placement;
+
+    // Details open upward above the summary; keep the whole card inside the viewport
     const summaryHeight = this.parts.summary.el.getBoundingClientRect().height || 90;
-    root.style.setProperty('--details-max', `${Math.max(120, vh - bottom - summaryHeight - 24)}px`);
+    const max = `${Math.max(120, vh - bottom - summaryHeight - 24)}px`;
+    if (this.parts.root.style.getPropertyValue('--details-max') !== max) this.parts.root.style.setProperty('--details-max', max);
   }
 
   unmount() {
+    this._resizeObserver?.disconnect();
     this.hostElement?.remove();
     this.hostElement = null;
     this.shadowRoot = null;
@@ -4806,6 +5203,8 @@ class ChatGPTDOMObserver {
     this.observer = null;
     this.debounceTimer = null;
     this._pendingSince = 0;
+    this._composer = null;
+    this.ignoredMutations = 0; // Batches skipped as irrelevant (performance diagnostics)
     this.lastUrl = typeof window !== 'undefined' ? window.location.href : '';
     this.isStreaming = false;
   }
@@ -4859,6 +5258,12 @@ class ChatGPTDOMObserver {
    * @param {MutationRecord[]} mutations 
    */
   handleMutations(mutations) {
+    // Typing in the chat input, the sidebar list and our own widget cannot change the conversation's
+    // context; skipping them removes most idle work (every keystroke used to start a full pass)
+    if (Array.isArray(mutations) && mutations.length > 0 && !mutations.some(m => this._isRelevant(m))) {
+      this.ignoredMutations++;
+      return;
+    }
     const streamingNow = this.checkIsStreaming();
     this.isStreaming = streamingNow;
 
@@ -4874,9 +5279,29 @@ class ChatGPTDOMObserver {
 
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      const triggeredAt = this._pendingSince; // First unhandled change: start of the update latency
       this._pendingSince = 0;
-      this.triggerUpdate();
+      this.triggerUpdate({ triggeredAt });
     }, delay);
+  }
+
+  /**
+   * False for mutations inside regions that never hold conversation content: the chat input's form
+   * (unless it is the model switcher), the sidebar <nav>, and the extension's own widget.
+   * @param {MutationRecord} m
+   * @returns {boolean}
+   */
+  _isRelevant(m) {
+    const node = m.target && (m.target.nodeType === 1 ? m.target : m.target.parentElement);
+    if (!node || !node.closest) return true;
+    if (node.closest('#chatgpt-context-monitor-host, nav')) return false;
+    if (!this._composer || !this._composer.isConnected) {
+      this._composer = document.querySelector('#prompt-textarea')?.closest('form') || null;
+    }
+    if (this._composer && this._composer.contains(node)) {
+      return Boolean(node.closest("[data-testid*='model-switcher'], [data-testid*='model-selector']"));
+    }
+    return true;
   }
 
   /**
@@ -5033,20 +5458,75 @@ function mergeLiveTurns(base, candidates, opts = {}) {
 
 
 
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const round1 = (n) => Math.round(n * 10) / 10;
+
+/**
+ * Rolling timing samples (last `size` per metric) for the performance section of diagnostics.
+ */
+class PerfStats {
+  constructor(size = 50) {
+    this.size = size;
+    this.series = {};
+    this.counters = { passes: 0, superseded: 0, syncsSent: 0, syncsCoalesced: 0 };
+  }
+
+  record(name, ms) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return;
+    const s = this.series[name] || (this.series[name] = []);
+    s.push(ms);
+    if (s.length > this.size) s.shift();
+  }
+
+  last(name) {
+    const s = this.series[name];
+    return s && s.length ? s[s.length - 1] : null;
+  }
+
+  /** { metric: { last, median, p95, max, n } } in milliseconds */
+  summary() {
+    const out = {};
+    for (const [name, s] of Object.entries(this.series)) {
+      if (!s.length) continue;
+      const sorted = [...s].sort((a, b) => a - b);
+      out[name] = {
+        last: round1(s[s.length - 1]),
+        median: round1(sorted[Math.floor((sorted.length - 1) / 2)]),
+        p95: round1(sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]),
+        max: round1(sorted[sorted.length - 1]),
+        n: s.length
+      };
+    }
+    return out;
+  }
+}
+
 class ContentScriptCoordinator {
   constructor(modelLimitsDb) {
     this.tokenizer = new Tokenizer();
     this.messageExtractor = new MessageExtractor();
     this.modelDetector = new ModelDetector(modelLimitsDb);
     this.planDetector = new PlanDetector();
-    this.conversationClient = new ConversationClient();
+    // The saved conversation only changes when a reply finishes (forced re-read), on an edit (also a
+    // reply) or elsewhere (another tab/device). So a copy stays fresh for a minute, and after that it
+    // is refreshed in the background (stale-while-revalidate) instead of blocking a pass.
+    this.conversationClient = new ConversationClient({ cacheTtlMs: 60000 });
+    this.conversationClient.onRevalidated = (id) => {
+      if (id === this.activeConversationId) this.handleDOMChange({ isRevalidated: true });
+    };
+    this.perf = new PerfStats();
+    this._sessionStartTokens = new Map(); // conversationId -> used tokens when first measured on this page
+    this._syncTimer = null;
+    this._lastSyncAt = 0;
     this.attachmentDetector = new AttachmentDetector();
     this.toolDetector = new ToolDetector();
     // UI adapter: the only ChatGPT-specific UI knowledge is the name and where the input is
     this.overlayUI = new ContextWidget({
       provider: 'ChatGPT',
       findInput: () => document.querySelector('#prompt-textarea') || document.querySelector('form textarea'),
-      onRefresh: () => this.refresh()
+      onRefresh: () => this.refresh(),
+      getDiagnostics: () => this.getDiagnostics()
     });
     this.domObserver = null;
     this.latestState = null;
@@ -5120,25 +5600,34 @@ class ContentScriptCoordinator {
    * @param {Object} turn 
    */
   handleStreamingChunk(turn) {
+    if (!this._streamPendingSince) this._streamPendingSince = Date.now();
     if (this._streamRafId) return;
-    // setTimeout, not requestAnimationFrame: rAF is paused in background tabs, which froze live counts
+    // Adaptive: every 50 ms, but never more often than twice the last pass took, so a long reply in a
+    // long conversation cannot saturate the page's main thread. setTimeout, not requestAnimationFrame:
+    // rAF is paused in background tabs, which froze live counts.
+    const wait = Math.max(50, Math.min(500, 2 * (this.perf.last('computeMs') || 0)));
     this._streamRafId = setTimeout(() => {
       this._streamRafId = null;
-      this.handleDOMChange({ isStreamProgress: true });
-    }, 50);
+      const triggeredAt = this._streamPendingSince;
+      this._streamPendingSince = 0;
+      this.handleDOMChange({ isStreamProgress: true, triggeredAt });
+    }, wait);
   }
 
   /**
-   * Handler for completed stream generation.
-   * Triggers authoritative fetch to pull finalized conversation tree.
-   * @param {Object} meta 
+   * Handler for completed stream generation. The final text is already known from the stream, so
+   * the numbers update at once; the saved tree is re-read in the background and applied when it lands
+   * (previously the update waited for that full download).
+   * @param {Object} meta
    */
   async handleStreamComplete(meta = {}) {
     const convId = meta.conversationId || this.activeConversationId;
-    if (convId) {
-      await this.conversationClient.fetchConversation(convId, { force: true });
+    const saved = convId ? this.conversationClient.fetchConversation(convId, { force: true }) : null;
+    await this.handleDOMChange({ isStreamComplete: true, triggeredAt: Date.now() });
+    if (saved) {
+      await saved;
+      await this.handleDOMChange({ isStreamComplete: true });
     }
-    this.handleDOMChange({ isStreamComplete: true });
   }
 
   /**
@@ -5181,6 +5670,54 @@ class ContentScriptCoordinator {
   }
 
   /**
+   * Short hash identifying a conversation in diagnostics without exposing its id.
+   * @param {string|null} conversationId
+   * @returns {string|null}
+   */
+  _conversationRef(conversationId) {
+    return conversationId ? this.tokenizer.hashString(conversationId).toString(16) : null;
+  }
+
+  /**
+   * "Copy diagnostics": the snapshot of the conversation on screen in this tab, checked at copy time.
+   * State left over from the previous conversation (the new one is still loading) is withheld.
+   * @returns {Object}
+   */
+  getDiagnostics() {
+    const currentRef = this._conversationRef(
+      this.conversationClient.extractConversationId() || this.requestObserver.getActiveConversationId()
+    );
+    const copiedAt = new Date().toISOString();
+    const d = this.latestState?.diagnostics;
+    if (!d) return { note: 'Nothing read yet in this tab', currentConversationRef: currentRef, copiedAt };
+    if (d.conversation?.ref !== currentRef) {
+      return {
+        note: 'The conversation on screen is still loading; data from the previous conversation is withheld',
+        currentConversationRef: currentRef,
+        loading: true,
+        version: d.version,
+        copiedAt
+      };
+    }
+    // Page structure counts are read now (once, at copy time) instead of on every analysis pass
+    const count = (sel) => (typeof document !== 'undefined' ? document.querySelectorAll(sel).length : null);
+    return {
+      ...d,
+      dom: {
+        ...d.dom,
+        roleNodes: count('[data-message-author-role]'),
+        turnContainers: count("[data-testid^='conversation-turn-']"),
+        articles: count('article'),
+        sections: count('section'),
+        modelSlugNodes: count('[data-message-model-slug]')
+      },
+      performance: this.performanceSnapshot(),
+      copiedAt,
+      stateAgeMs: Date.now() - this.latestState.timestamp
+    };
+  }
+
+  /**
    * Which conversation is on screen. The URL is the source of truth; without an id in the URL
    * (new chat) the network id is used, but only one adopted on this page: leaving /c/<id> for a
    * new chat drops the previous conversation's network state so nothing carries over.
@@ -5212,6 +5749,8 @@ class ContentScriptCoordinator {
    */
   async handleDOMChange(event = {}) {
     const runSeq = ++this._runSeq;
+    const tPass = now();
+    this.perf.counters.passes++;
     try {
       // 1. Identify active conversation ID from URL or Network, and handle navigation
       const conversationId = this.resolveConversationId();
@@ -5224,16 +5763,23 @@ class ContentScriptCoordinator {
         this.overlayUI.update(toWidgetState(null, { provider: 'ChatGPT' }));
       }
 
-      if (event.isNavigation || isNewConversation) {
-        this.tokenizer.clearCache();
-        if (isNewConversation) {
-          this.activeConversationId = conversationId;
-          this.requestObserver.setActiveConversationId(conversationId);
-        }
+      // (The token cache is kept across conversations: entries are keyed by message id + text hash,
+      // so reuse is always exact and switching back to a long conversation needs no re-count.)
+      if (isNewConversation) {
+        this.activeConversationId = conversationId;
+        this.requestObserver.setActiveConversationId(conversationId);
       }
 
-      // 2. Extract DOM messages (used as base fallback and for real-time corroboration)
+      // 2. Read the page once per pass (each detector used to run up to three times per pass)
+      const tDom = now();
       const rawDomMessages = this.messageExtractor.extractMessages(document);
+      const domAttachments = this.attachmentDetector.detect(document);
+      // Pass the raw slug (not the resolved family key) so the UI shows the real model name
+      const domModelRaw = this.modelDetector.detectRawModelString(document);
+      const domModel = this.modelDetector.resolveModel(domModelRaw);
+      const domTools = this.toolDetector.detect(document);
+      const domPlan = this.planDetector.detect(document);
+      this.perf.record('domScanMs', now() - tDom);
 
       // 3. Detect model specifications with provenance
       let model = null;
@@ -5248,19 +5794,28 @@ class ContentScriptCoordinator {
 
       // 4. Primary: Retrieve authoritative conversation structure from backend API
       let effectiveMessages = rawDomMessages;
-      let effectiveAttachments = this.attachmentDetector.detect(document);
+      let effectiveAttachments = domAttachments;
       let dataSource = 'dom';
       let apiError = null;
       let authMessagesCount = null;
       let normalized = null;
       let authStatus = null;
+      let authFromCapture = false;
 
-      // Session gives the bearer token for the API and the account plan (cached, cheap to call)
+      // Session gives the bearer token for the API and the account plan (cached, cheap to call).
+      // A pass only waits on the network when no copy of the conversation exists yet.
+      const tWait = now();
       const session = await this.conversationClient.getSession();
+      let authResult = null;
+      if (conversationId) {
+        authResult = await this.conversationClient.fetchConversation(conversationId, { staleWhileRevalidate: true });
+      }
+      this.perf.record('networkWaitMs', now() - tWait);
+      const tCompute = now();
 
       if (conversationId) {
-        const authResult = await this.conversationClient.fetchConversation(conversationId);
         authStatus = authResult.status ?? null;
+        authFromCapture = Boolean(authResult.fromCapture);
         if (authResult.fromCapture) {
           apiError = `Direct fetch failed (${authResult.fetchError}); using the page's own conversation response`;
         }
@@ -5295,7 +5850,7 @@ class ContentScriptCoordinator {
 
       // Priority C: DOM header switcher fallback if still unresolved
       if (!model) {
-        model = this.modelDetector.detect(document);
+        model = domModel;
         modelProvenance = { source: 'dom', evidenceType: 'OBSERVED' };
       }
 
@@ -5331,10 +5886,11 @@ class ContentScriptCoordinator {
           isStreaming: Boolean(msg.isStreaming)
         };
       });
+      const tTok = now();
       let tokenizedMessages = tokenize(encoding);
+      let tokenizeMs = now() - tTok;
 
       // 7. Detect tools from both DOM and Network
-      const domTools = this.toolDetector.detect(document);
       const netTools = this.requestObserver.getObservedTools();
       const combinedToolList = [...(domTools.list || [])];
 
@@ -5418,9 +5974,6 @@ class ContentScriptCoordinator {
       if (normalized?.modelSlug) {
         modelCandidates.push({ value: normalized.modelSlug, compareKey: modelKey(normalized.modelSlug), source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
-      const domModel = this.modelDetector.detect(document);
-      // Pass the raw slug (not the resolved family key) so the UI shows the real model name
-      const domModelRaw = this.modelDetector.detectRawModelString(document);
       if (domModelRaw && domModel && domModel.id !== 'unknown') {
         modelCandidates.push({ value: domModelRaw, compareKey: modelKey(domModelRaw), source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
@@ -5441,7 +5994,6 @@ class ContentScriptCoordinator {
       if (normalized?.attachments) {
         attachmentCandidates.push({ value: normalized.attachments.count, source: 'conversation_api', evidenceType: EvidenceType.EXACT });
       }
-      const domAttachments = this.attachmentDetector.detect(document);
       if (domAttachments && (!normalized?.attachments || domAttachments.count >= normalized.attachments.count)) {
         attachmentCandidates.push({ value: domAttachments.count, source: 'dom', evidenceType: EvidenceType.OBSERVED });
       }
@@ -5463,7 +6015,6 @@ class ContentScriptCoordinator {
       if (netPlan && netPlan.value) {
         planCandidates.push({ value: normalizePlanTier(netPlan.value), source: 'network', evidenceType: EvidenceType.OBSERVED });
       }
-      const domPlan = this.planDetector.detect(document);
       if (domPlan && domPlan.value && domPlan.value !== PlanTier.UNKNOWN) {
         planCandidates.push({ value: domPlan.value, source: domPlan.source === 'dom_heuristic' ? 'dom_heuristic' : 'dom', evidenceType: domPlan.evidenceType || EvidenceType.OBSERVED });
       }
@@ -5483,8 +6034,11 @@ class ContentScriptCoordinator {
       const winningModelSlug = reconciled.evidence?.model?.value || null;
       model = this.modelDetector.resolveModel(winningModelSlug, winningPlan);
       if (model.encoding && model.encoding !== encoding) {
+        const tRetok = now();
         tokenizedMessages = tokenize(model.encoding); // Count with the winning model's tokenizer
+        tokenizeMs += now() - tRetok;
       }
+      this.perf.record('tokenizeMs', tokenizeMs);
 
       // 10. Calculate context metrics
       const contextState = ContextCalculator.calculate({
@@ -5519,36 +6073,143 @@ class ContentScriptCoordinator {
       contextState.completeness.isLowerBound = !conversationComplete;
       contextState.completeness.hiddenContextMeasured = false;
 
-      // Structure-only snapshot for the "Copy diagnostics" button: no message text, no token
+      // Context intelligence: health, consumers, growth and advice from the measured values only
+      if (!awaitingData && conversationId && !this._sessionStartTokens.has(conversationId)) {
+        this._sessionStartTokens.set(conversationId, contextState.tokens.totalMeasurable);
+      }
+      contextState.intelligence = analyzeContext({
+        percentage: contextState.utilization.percentage,
+        usedTokens: contextState.tokens.totalMeasurable,
+        contextLimit: contextState.model.contextWindow,
+        remainingTokens: contextState.tokens.remaining,
+        messages: tokenizedMessages,
+        attachments: effectiveAttachments,
+        isLowerBound: !conversationComplete,
+        sessionStartTokens: conversationId ? (this._sessionStartTokens.get(conversationId) ?? null) : null
+      });
+
+      // Limit and token provenance depend on the winning model + plan, so they are recorded only now.
+      // The limit comes from the curated limits table (OBSERVED + VERIFIED/UNVERIFIED status), never EXACT.
+      const ev = reconciled.evidence;
+      const windowKnown = Boolean(contextState.model.contextWindow);
+      ev.limit = {
+        value: contextState.model.contextWindow,
+        status: windowKnown ? contextState.model.limitStatus : 'UNKNOWN',
+        source: windowKnown ? 'model_db' : 'unknown',
+        reference: windowKnown ? (model.limitSource || null) : null,
+        evidenceType: windowKnown ? EvidenceType.OBSERVED : EvidenceType.UNKNOWN
+      };
+      // Counted locally from visible text: an estimate of what the model receives, not reported usage
+      const counted = (value) => ({ value, source: 'tokenizer', evidenceType: EvidenceType.ESTIMATED, textFrom: dataSource });
+      ev.tokens = {
+        user: counted(contextState.tokens.user),
+        assistant: counted(contextState.tokens.assistant),
+        total: counted(contextState.tokens.totalMeasurable),
+        contextWindow: { value: ev.limit.value, source: ev.limit.source, evidenceType: ev.limit.evidenceType }
+      };
+
+      // Structure-only snapshot for the "Copy diagnostics" button. Never message text, the login token,
+      // or the raw conversation id (a hash identifies it); ids inside paths are redacted.
+      const redact = (s) => String(s).replace(/[0-9a-f-]{20,}/gi, ':id');
+      const brief = (e) => (e ? { value: e.value ?? null, source: e.source, type: e.evidenceType, confirmedBy: e.confirmedBy || [] } : null);
+      const urlConversationId = this.conversationClient.extractConversationId();
       contextState.diagnostics = {
         version: typeof chrome !== 'undefined' && chrome.runtime?.getManifest ? chrome.runtime.getManifest().version : null,
-        path: location.pathname.replace(/[0-9a-f-]{20,}/gi, ':id'),
-        session: session ? { ok: session.ok, status: session.status, planType: session.planType || null } : null,
-        conversationApi: conversationId ? {
+        generatedAt: new Date().toISOString(),
+        page: {
+          path: redact(location.pathname),
+          visible: typeof document !== 'undefined' && document.visibilityState ? document.visibilityState === 'visible' : null
+        },
+        conversation: {
+          ref: this._conversationRef(conversationId),
+          idFrom: conversationId ? (urlConversationId ? 'url' : 'network') : 'none (new chat)',
+          loading: awaitingData,
+          requestInFlight: Boolean(conversationId && this.conversationClient.activeFetches.has(conversationId)),
           dataSource,
-          error: apiError || null,
-          authoritativeTurns: authMessagesCount
-        } : 'no conversation id in URL',
+          apiStatus: authStatus,
+          apiError: apiError || null,
+          usedPageCopy: authFromCapture,
+          turns: {
+            api: apiVisibleTurns,
+            apiIncludingTools: authMessagesCount,
+            page: rawDomMessages.length,
+            live: liveCandidates.length,
+            counted: effectiveMessages.length
+          },
+          completeness: { source: completenessSource, complete: conversationComplete, lowerBound: !conversationComplete, virtualizationGap },
+          hiddenMessagesExcluded: normalized?.hiddenMessages || 0
+        },
+        session: session ? { ok: session.ok, status: session.status, planType: session.planType || null, error: session.error || null } : null,
+        // Page structure counts are taken at copy time (getDiagnostics), not on every pass
         dom: {
           turns: rawDomMessages.length,
-          roleNodes: document.querySelectorAll('[data-message-author-role]').length,
-          turnContainers: document.querySelectorAll("[data-testid^='conversation-turn-']").length,
-          articles: document.querySelectorAll('article').length,
-          sections: document.querySelectorAll('section').length,
-          modelSlugNodes: document.querySelectorAll('[data-message-model-slug]').length,
           rawModel: domModelRaw
+        },
+        intelligence: {
+          health: contextState.intelligence.health.level,
+          warnings: contextState.intelligence.warnings.map(w => w.level),
+          consumers: contextState.intelligence.consumers.map(c => `${c.key}:${c.share}%`),
+          growth: contextState.intelligence.growth,
+          sessionGrowth: contextState.intelligence.sessionGrowth,
+          advice: contextState.intelligence.advice.title
         },
         network: {
           available: networkHealth.networkAvailable,
+          activeStreams: networkHealth.activeStreamsCount,
+          interceptionErrors: networkHealth.interceptionErrors,
           observedModel: this.requestObserver.getObservedModel()?.value || null,
           observedPlan: netPlan?.value || null,
-          unsupportedEndpoints: Array.from(this.requestObserver.unsupportedEndpoints || []).slice(0, 15)
+          // Endpoint + status only: raw error text can quote response bodies
+          recentErrors: (this.requestObserver.errorLog || []).slice(-5).map(e => ({
+            type: e.type, endpoint: redact(e.endpoint), status: /^Status \d+$/.test(e.details) ? e.details : null
+          })),
+          unsupportedEndpoints: Array.from(this.requestObserver.unsupportedEndpoints || []).slice(0, 15).map(redact)
         },
         candidates: {
           model: modelCandidates.map(c => `${c.source}:${c.value}`),
-          plan: planCandidates.map(c => `${c.source}:${c.value}`)
+          plan: planCandidates.map(c => `${c.source}:${c.value}`),
+          turns: turnCandidates.map(c => `${c.source}:${c.value}`),
+          attachments: attachmentCandidates.map(c => `${c.source}:${c.value}`)
         },
-        resolved: { model: model?.id, limit: contextState.model?.contextWindow, limitStatus: contextState.model?.limitStatus }
+        evidence: {
+          model: brief(ev.model),
+          plan: brief(ev.plan),
+          turns: brief(ev.turns),
+          attachments: brief(ev.attachments),
+          limit: { value: ev.limit.value, status: ev.limit.status, source: ev.limit.source, type: ev.limit.evidenceType, reference: ev.limit.reference },
+          tokens: { source: 'tokenizer', type: EvidenceType.ESTIMATED, textFrom: dataSource }
+        },
+        agreements: reconciled.agreements,
+        conflicts: reconciled.conflicts.map(c => ({
+          field: c.field,
+          winning: `${c.winning.source}:${c.winning.value}`,
+          discarded: `${c.discarded.source}:${c.discarded.value}`
+        })),
+        resolved: {
+          model: model?.id,
+          modelName: contextState.model.displayName,
+          recognized: contextState.model.recognized,
+          plan: contextState.plan.tier,
+          limit: contextState.model.contextWindow,
+          limitStatus: ev.limit.status,
+          limitReference: ev.limit.reference
+        },
+        tokens: {
+          used: contextState.tokens.totalMeasurable,
+          user: contextState.tokens.user,
+          assistant: contextState.tokens.assistant,
+          attachments: contextState.tokens.attachments,
+          remaining: contextState.tokens.remaining,
+          percentage: contextState.utilization.percentage,
+          lowerBound: !conversationComplete,
+          hiddenContextMeasured: false
+        },
+        confidence: {
+          level: contextState.confidence.level,
+          percentage: contextState.confidence.percentage,
+          highBlockers: contextState.confidence.highBlockers || [],
+          factors: contextState.confidence.factors.map(f => `${f.type === 'positive' ? '+' : '-'} ${f.text}`)
+        }
       };
 
       if (apiError) {
@@ -5559,7 +6220,11 @@ class ContentScriptCoordinator {
       contextState.conflicts = reconciled.conflicts;
 
       // A newer pass started while this one awaited the API; its result wins
-      if (runSeq !== this._runSeq) return;
+      if (runSeq !== this._runSeq) {
+        this.perf.counters.superseded++;
+        return;
+      }
+      this.perf.record('computeMs', now() - tCompute);
 
       // Time from page navigation to the first real numbers, for measuring load delay on the live site
       if (!awaitingData && this._firstDataAtMs === undefined) this._firstDataAtMs = Math.round(performance.now());
@@ -5568,7 +6233,13 @@ class ContentScriptCoordinator {
       this.latestState = contextState;
 
       // 10. Update in-page floating HUD
+      const tRender = now();
       this.overlayUI.update(toWidgetState(contextState, { provider: 'ChatGPT' }));
+      this.perf.record('renderMs', now() - tRender);
+      this.perf.record('passMs', now() - tPass);
+      // Update latency: from the change on the page / stream chunk to the widget showing it
+      if (event.triggeredAt) this.perf.record('updateLatencyMs', Date.now() - event.triggeredAt);
+      contextState.diagnostics.performance = this.performanceSnapshot();
 
       // 11. Sync state to chrome.storage.session and background service worker
       this.syncState(contextState);
@@ -5583,17 +6254,64 @@ class ContentScriptCoordinator {
    * @param {Object} state 
    */
   syncState(state) {
-    if (typeof chrome === 'undefined') return;
-
-    // Send full state: the service worker caches it per tab and the popup renders from it
-    if (chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({
-        type: 'CONTEXT_UPDATED',
-        payload: state
-      }).catch(() => {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    this._pendingSync = state;
+    // Leading + trailing throttle: the first update goes out at once, bursts (streaming at 20 passes/s)
+    // collapse into at most one message per SYNC_MS carrying the latest state. The widget is updated
+    // directly on every pass; this only feeds the toolbar badge.
+    const SYNC_MS = 250;
+    if (this._syncTimer) {
+      this.perf.counters.syncsCoalesced++;
+      return;
+    }
+    const send = () => {
+      const payload = this._pendingSync;
+      this._pendingSync = null;
+      if (!payload) return;
+      this._lastSyncAt = Date.now();
+      this.perf.counters.syncsSent++;
+      chrome.runtime.sendMessage({ type: 'CONTEXT_UPDATED', payload }).catch(() => {
         // Suppress errors when service worker is temporarily inactive
       });
+    };
+    const wait = SYNC_MS - (Date.now() - this._lastSyncAt);
+    if (wait <= 0) {
+      send();
+      // Hold the window open so the next burst coalesces into one trailing send
+      this._syncTimer = setTimeout(() => { this._syncTimer = null; send(); }, SYNC_MS);
+    } else {
+      this._syncTimer = setTimeout(() => { this._syncTimer = null; send(); }, wait);
     }
+  }
+
+  /**
+   * Latency + work counters for the "performance" section of diagnostics (milliseconds).
+   *   passMs          whole analysis pass, including any wait for the network
+   *   networkWaitMs   time a pass waited for session / conversation data (0 when served from cache)
+   *   domScanMs       reading the page (messages, attachments, model, tools, plan)
+   *   tokenizeMs      BPE counting (only new or changed messages are encoded)
+   *   computeMs       everything after the data arrived, up to rendering
+   *   renderMs        widget update
+   *   updateLatencyMs page change / stream chunk -> widget shows it (includes debounce)
+   * @returns {Object}
+   */
+  performanceSnapshot() {
+    return {
+      timings: this.perf.summary(),
+      counters: {
+        ...this.perf.counters,
+        ignoredMutationBatches: this.domObserver?.ignoredMutations ?? 0,
+        apiDownloads: this.conversationClient.stats.downloads,
+        apiCacheHits: this.conversationClient.stats.cacheHits,
+        apiStaleServed: this.conversationClient.stats.staleServed,
+        normalizeReused: this.conversationClient.stats.normalizeReused,
+        messagesEncoded: this.tokenizer.stats.encoded,
+        charsEncoded: this.tokenizer.stats.encodedChars,
+        tokenCacheHits: this.tokenizer.stats.cacheHits,
+        pageTextCleaned: this.messageExtractor.stats?.cleaned ?? 0,
+        pageTextReused: this.messageExtractor.stats?.reused ?? 0
+      }
+    };
   }
 }
 

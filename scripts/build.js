@@ -63,6 +63,7 @@ const classifierCode = readCleanModule(path.join(rootDir, 'engine', 'context-cla
 const mergerCode = readCleanModule(path.join(rootDir, 'engine', 'evidence-merger.js'));
 const confidenceCode = readCleanModule(path.join(rootDir, 'engine', 'confidence-engine.js'));
 const calculatorCode = readCleanModule(path.join(rootDir, 'engine', 'context-calculator.js'));
+const advisorCode = readCleanModule(path.join(rootDir, 'engine', 'context-advisor.js'));
 const extractorCode = readCleanModule(path.join(rootDir, 'content', 'message-extractor.js'));
 const planDetectorCode = readCleanModule(path.join(rootDir, 'content', 'plan-detector.js'));
 const detectorCode = readCleanModule(path.join(rootDir, 'content', 'model-detector.js'));
@@ -105,6 +106,8 @@ const bundledContentScript = `/**
   ${confidenceCode}
 
   ${calculatorCode}
+
+  ${advisorCode}
 
   // --- Network Layer ---
   ${requestObserverCode}

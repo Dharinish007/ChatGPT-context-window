@@ -9,6 +9,31 @@
 export class MessageExtractor {
   constructor(options = {}) {
     this.selectors = options.selectors || {};
+    // element -> { raw: element count + textContent, text: cleaned text }. Cleaning deep-clones the node
+    // and queries it many times; visible text cannot change without changing one of the two, so an
+    // equal key means the cleaned text is still valid. Entries die with their elements.
+    this._textCache = new WeakMap();
+    this.stats = { cleaned: 0, reused: 0 };
+  }
+
+  /**
+   * cleanElementText with reuse for unchanged elements (same textContent = same visible text).
+   * @param {HTMLElement} element
+   * @returns {string}
+   */
+  _cleanText(element) {
+    // Text plus element count: structure-only changes (a <br>, new block) alter innerText line breaks
+    const elements = typeof element.getElementsByTagName === 'function' ? element.getElementsByTagName('*').length : -1;
+    const raw = `${elements}|${element.textContent || ''}`;
+    const hit = this._textCache.get(element);
+    if (hit && hit.raw === raw) {
+      this.stats.reused++;
+      return hit.text;
+    }
+    const text = this.cleanElementText(element);
+    this._textCache.set(element, { raw, text });
+    this.stats.cleaned++;
+    return text;
   }
 
   /**
@@ -148,7 +173,7 @@ export class MessageExtractor {
                         turnEl.querySelector('div[class*="prose"]') ||
                         turnEl;
 
-      const text = this.cleanElementText(contentEl);
+      const text = this._cleanText(contentEl);
       if (!text) continue;
 
       // Prefer ChatGPT's message id so DOM turns line up with API / network turns

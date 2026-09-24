@@ -2,93 +2,122 @@
  * Context Monitor - Context Widget (provider-neutral UI)
  *
  * Renders the normalized view state from widget-state.js (toWidgetState). It knows nothing about
- * any AI site: a provider adapter supplies `findInput()` (the chat input element), a name, and
- * `onRefresh()` (re-read the conversation now; may return a promise).
+ * any AI site: a provider adapter supplies a name, `findInput()` (the chat input element),
+ * `onRefresh()` (re-read the conversation now; may return a promise) and `getDiagnostics()`.
+ * Everything lives in a shadow root, so the host page's CSS cannot reach it and ours never leaks out.
  *
- * Components (each builds its DOM once and exposes update(vm), so updates only change text:
- * no flicker, no lost expand state, and page-derived strings never become HTML):
- *   ContextSummary  - collapsed card: percentage, ConfidenceBadge, refresh, toggle, UsageProgress, used/total, ModelInfo
- *   ContextDetails  - expanded sections, top to bottom: breakdown (+ used/remaining/window),
- *                     confidence dropdown (closed by default) + EvidenceList, diagnostics, model
- * The percentage and progress bar live only in the summary card.
+ * One card, bottom-anchored. Expanding opens the details ABOVE the summary, so the summary (the
+ * main element) never moves and the width never changes:
+ *
+ *   ContextDetails (open only)  Breakdown (+ used / remaining / window)
+ *                               Confidence dropdown (closed by default) + all evidence
+ *                               Diagnostics (warning, Copy diagnostics)
+ *                               Model (provider, model · family, plan, source, turns)
+ *   ContextSummary              [percentage] [confidence]            [refresh] [expand]
+ *                               progress bar
+ *                               used / total tokens
+ *                               model · family
+ *
+ * The percentage is shown once (summary only). Components build their DOM once; update(vm) writes
+ * only what changed, so repeated identical updates cause zero DOM mutations (no flicker, no lost
+ * focus/scroll/open state), and page-derived strings are only ever assigned as text, never HTML.
  */
 
 const STYLES = `
   :host { all: initial; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   .root {
-    --primary: #6366F1; --accent: #06B6D4;
-    --bg: #F8FAFC; --card: #FFFFFF; --text: #0F172A; --muted: #64748B; --line: #E2E8F0; --track: #E2E8F0;
-    --ok: #059669; --warn: #D97706; --bad: #DC2626; --shadow: 0 4px 16px rgba(15, 23, 42, 0.10);
-    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --primary: #6366F1; --accent: #06B6D4; --primary-text: #4F46E5;
+    --surface: #FFFFFF; --subtle: #F8FAFC; --text: #0F172A; --muted: #64748B; --line: #E2E8F0; --track: #EEF2F7;
+    --ok: #059669; --warn: #D97706; --bad: #DC2626;
+    --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px rgba(15, 23, 42, .10);
+    font: 12.5px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-variant-numeric: tabular-nums;
     color: var(--text);
-    display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+    color-scheme: light; /* native scrollbars and focus rings follow the widget theme */
+    -webkit-font-smoothing: antialiased;
   }
   .root.dark {
-    --bg: #0F172A; --card: #111827; --text: #F1F5F9; --muted: #94A3B8; --line: #1F2937; --track: #1E293B;
-    --ok: #34D399; --warn: #FBBF24; --bad: #F87171; --shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+    --primary-text: #A5B4FC;
+    --surface: #0F172A; --subtle: #111C33; --text: #E2E8F0; --muted: #94A3B8; --line: #1E293B; --track: #1E293B;
+    --ok: #34D399; --warn: #FBBF24; --bad: #F87171;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px rgba(0, 0, 0, .45);
   }
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
   }
 
-  /* ContextSummary (collapsed) */
-  .summary { padding: 10px 12px; min-width: 200px; }
-  .top { display: flex; align-items: center; gap: 8px; }
-  .pct { font-size: 18px; font-weight: 700; color: var(--primary); letter-spacing: -0.01em; }
-  .pct small { font-size: 10px; font-weight: 600; letter-spacing: .08em; color: var(--muted); margin-left: 4px; }
+  /* Summary (always visible) */
+  .summary { padding: 12px 14px 11px; }
+  .top { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .pct { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap;
+    font-size: 26px; font-weight: 700; line-height: 1; letter-spacing: -.02em; color: var(--primary-text); }
+  .pct .unit { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; color: var(--muted); }
+  .pct.warn { color: var(--warn); } .pct.bad { color: var(--bad); }
   .spacer { flex: 1; }
   .badge {
     display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; letter-spacing: .06em;
     padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+    background: var(--subtle);
   }
   .badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: block; }
   .badge.HIGH { color: var(--ok); } .badge.MEDIUM { color: var(--warn); } .badge.LOW { color: var(--muted); }
   .toggle {
-    all: unset; cursor: pointer; width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
-    color: var(--muted); transition: background .15s ease;
+    all: unset; cursor: pointer; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+    color: var(--muted); transition: background .15s ease, color .15s ease;
   }
   .toggle:hover { background: var(--track); color: var(--text); }
   .toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
   .toggle:disabled { cursor: default; opacity: .6; }
-  .open .toggle.chev { transform: rotate(180deg); }
+  .toggle.chev svg { transition: transform .2s ease; }
+  .open .toggle.chev svg { transform: rotate(180deg); }
   .refreshing svg { animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .progress { height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; margin: 8px 0 7px; }
+  .progress { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; margin: 10px 0 8px; }
   .progress b { display: block; height: 100%; width: 0; border-radius: inherit;
-    background: linear-gradient(90deg, var(--primary), var(--accent)); transition: width .3s ease; }
+    background: linear-gradient(90deg, var(--primary), var(--accent)); transition: width .35s ease; }
   .progress.warn b { background: var(--warn); } .progress.bad b { background: var(--bad); }
-  .tokens { font-weight: 600; }
-  .model { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tokens { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tokens .of { color: var(--muted); font-weight: 500; }
+  .model { margin-top: 2px; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* ContextDetails (expanded) */
-  .details { display: none; flex-direction: column; gap: 8px; overflow: auto; max-height: var(--details-max, 60vh);
-    padding: 2px; margin: -2px; }
-  .open .details { display: flex; }
-  .section { padding: 10px 12px; }
+  /* Details (open only), above the summary inside the same card */
+  .details { display: none; overflow: auto; overscroll-behavior: contain; max-height: var(--details-max, 60vh);
+    border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+  .open .details { display: block; }
+  .section { padding: 11px 14px; }
+  .section + .section { border-top: 1px solid var(--line); }
   .h { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-  .divider { border-top: 1px solid var(--line); margin: 6px 0; }
+  .divider { border-top: 1px dashed var(--line); margin: 6px 0; }
   .conf > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; }
   .conf > summary::-webkit-details-marker { display: none; }
   .conf > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
-  .conf > summary svg { margin-left: auto; color: var(--muted); transition: transform .15s ease; }
+  .conf > summary svg { margin-left: auto; color: var(--muted); transition: transform .2s ease; }
   .conf[open] > summary svg { transform: rotate(180deg); }
   .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 2px 0; }
   .row .k { color: var(--muted); white-space: nowrap; }
-  .row .v { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  .row .v { text-align: right; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
   .tag { font-size: 9px; font-weight: 700; letter-spacing: .05em; padding: 1px 5px; border-radius: 4px; margin-left: 6px;
     border: 1px solid var(--line); color: var(--muted); vertical-align: 1px; white-space: nowrap; }
+  .tag:empty { display: none; }
   .tag.VERIFIED { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
-  .evidence { list-style: none; display: flex; flex-direction: column; gap: 3px; margin-top: 6px; font-size: 12px; }
-  .evidence li { display: flex; gap: 6px; }
+  .evidence { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+  .evidence li { display: flex; gap: 7px; align-items: baseline; }
+  .evidence li span:last-child { min-width: 0; overflow-wrap: anywhere; }
   .evidence .y { color: var(--ok); } .evidence .n { color: var(--warn); }
   .warn-text { color: var(--warn); font-size: 12px; margin-bottom: 8px; }
-  .btn { all: unset; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--primary);
-    border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
+  .warn-text:empty { display: none; }
+  .btn { all: unset; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--primary-text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; background: var(--subtle); }
   .btn:hover { border-color: var(--primary); }
   .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
-  .fine { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .fine { color: var(--muted); font-size: 11px; margin-top: 8px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
 `;
 
 const fmtK = (n) => {
@@ -106,6 +135,11 @@ function h(tag, cls, parent, text) {
   if (parent) parent.appendChild(n);
   return n;
 }
+
+/** Writes only when the value changed: identical updates cause no DOM mutation. */
+const setText = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+const setClass = (node, cls) => { if (node.className !== cls) node.className = cls; };
+const setAttr = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
 
 /** Stroked 16x16 SVG icon from one path. */
 function icon(parent, d) {
@@ -130,23 +164,27 @@ const CHEVRON_UP = 'M4 10l4-4 4 4';
 const CHEVRON_DOWN = 'M4 6l4 4 4-4';
 const REFRESH = 'M13 8a5 5 0 1 1-1.5-3.55M13 2.5v3h-3';
 
+const tone = (p) => (p === null ? '' : p >= 85 ? 'bad' : p >= 65 ? 'warn' : '');
+
 /** Progress bar; tone switches to warn/bad near the limit. */
 function UsageProgress(parent) {
   const el = h('div', 'progress', parent);
   el.setAttribute('role', 'progressbar');
   el.setAttribute('aria-valuemin', '0');
   el.setAttribute('aria-valuemax', '100');
+  el.setAttribute('aria-label', 'Context used');
   const fill = h('b', null, el);
   return {
     el,
     update(vm) {
       const p = vm.percentage;
-      el.style.display = p === null ? 'none' : '';
+      const display = p === null ? 'none' : '';
+      if (el.style.display !== display) el.style.display = display;
       if (p === null) return;
-      fill.style.width = `${Math.min(100, p)}%`;
-      el.classList.toggle('warn', p >= 65 && p < 85);
-      el.classList.toggle('bad', p >= 85);
-      el.setAttribute('aria-valuenow', String(p));
+      const width = `${Math.min(100, p)}%`;
+      if (fill.style.width !== width) fill.style.width = width;
+      setClass(el, `progress ${tone(p)}`.trim());
+      setAttr(el, 'aria-valuenow', String(p));
     }
   };
 }
@@ -158,29 +196,24 @@ function ConfidenceBadge(parent, withScore = false) {
   const label = h('span', null, el);
   return {
     update(vm) {
-      el.style.display = vm.ready === false ? 'none' : ''; // No confidence claim before there is data
-      el.className = `badge ${vm.confidenceLevel}`;
-      label.textContent = withScore ? `${vm.confidence}% ${vm.confidenceLevel}` : vm.confidenceLevel;
-      el.title = `Measurement confidence ${vm.confidence}%`;
+      const display = vm.ready === false ? 'none' : ''; // No confidence claim before there is data
+      if (el.style.display !== display) el.style.display = display;
+      setClass(el, `badge ${vm.confidenceLevel}`);
+      setText(label, withScore ? `${vm.confidence}% ${vm.confidenceLevel}` : vm.confidenceLevel);
+      setAttr(el, 'title', `Measurement confidence ${vm.confidence}%`);
     }
   };
 }
 
-/** "GPT-5.6 · Instant" (+ plan when requested). */
-function ModelInfo(parent, withPlan = false) {
-  const el = h('div', 'model', parent);
-  return {
-    update(vm) {
-      el.textContent = [vm.model, vm.modelFamily, withPlan && vm.plan ? `${vm.plan} plan` : null].filter(Boolean).join(' · ');
-      el.title = `${vm.provider}: ${el.textContent}`;
-    }
-  };
-}
+/** "GPT-5.6 · Instant" */
+const modelText = (vm) => [vm.model, vm.modelFamily].filter(Boolean).join(' · ');
 
 function ContextSummary(parent, onToggle, onRefresh) {
-  const el = h('div', 'card summary', parent);
+  const el = h('div', 'summary', parent);
   const top = h('div', 'top', el);
   const pct = h('span', 'pct', top);
+  const pctNum = h('span', 'num', pct);
+  const pctUnit = h('span', 'unit', pct);
   const confidence = ConfidenceBadge(top);
   h('span', 'spacer', top);
 
@@ -208,40 +241,77 @@ function ContextSummary(parent, onToggle, onRefresh) {
   toggle.setAttribute('aria-label', 'Show context details');
   toggle.setAttribute('aria-expanded', 'false');
   toggle.addEventListener('click', onToggle);
+
   const progress = UsageProgress(el);
   const tokens = h('div', 'tokens', el);
-  const model = ModelInfo(el);
+  const used = h('span', null, tokens);
+  const of = h('span', 'of', tokens);
+  const model = h('div', 'model', el);
   return {
     el,
     setExpanded(open) {
-      toggle.setAttribute('aria-expanded', String(open));
-      toggle.setAttribute('aria-label', open ? 'Hide context details' : 'Show context details');
+      setAttr(toggle, 'aria-expanded', String(open));
+      setAttr(toggle, 'aria-label', open ? 'Hide context details' : 'Show context details');
     },
     update(vm) {
-      pct.textContent = '';
       if (!vm.ready) {
-        pct.textContent = '…';
+        setText(pctNum, '…');
+        setText(pctUnit, '');
       } else if (vm.percentage === null) {
-        pct.append(fmtK(vm.usedTokens));
-        h('small', null, pct, 'TOKENS');
+        setText(pctNum, fmtK(vm.usedTokens));
+        setText(pctUnit, 'TOKENS');
       } else {
-        pct.append(`${fmtPct(vm.percentage, vm.usedTokens)}%`);
-        h('small', null, pct, 'USED');
+        setText(pctNum, `${fmtPct(vm.percentage, vm.usedTokens)}%`);
+        setText(pctUnit, 'USED');
       }
+      setClass(pct, `pct ${vm.ready ? tone(vm.percentage) : ''}`.trim());
       confidence.update(vm);
       progress.update(vm);
-      tokens.textContent = !vm.ready ? 'Reading conversation…'
-        : vm.contextLimit ? `${fmtK(vm.usedTokens)} / ${fmtK(vm.contextLimit)}`
-        : `${fmtK(vm.usedTokens)} / window unknown${vm.plan ? '' : ' (plan not detected)'}`;
-      model.update(vm);
+      if (!vm.ready) {
+        setText(used, 'Reading conversation…');
+        setText(of, '');
+      } else if (vm.contextLimit) {
+        setText(used, fmtK(vm.usedTokens));
+        setText(of, ` / ${fmtK(vm.contextLimit)} tokens`);
+      } else {
+        setText(used, fmtK(vm.usedTokens));
+        setText(of, ` / window unknown${vm.plan ? '' : ' (plan not detected)'}`);
+      }
+      setText(model, modelText(vm));
+      setAttr(model, 'title', `${vm.provider}: ${model.textContent}`);
     }
   };
 }
 
+/** Label/value rows (optionally tagged). Rebuilt only when the rows actually change. */
+function RowList(parent) {
+  const el = h('div', null, parent);
+  let signature = null;
+  return {
+    update(rows) {
+      const next = JSON.stringify(rows);
+      if (next === signature) return;
+      signature = next;
+      el.textContent = '';
+      for (const r of rows) {
+        const row = h('div', 'row', el);
+        h('span', 'k', row, r.label);
+        const v = h('span', 'v', row, r.value);
+        if (r.tag) h('span', `tag ${r.tag}`, v, r.tag);
+      }
+    }
+  };
+}
+
+/** Every confidence reason / evidence line, in engine order. Rebuilt only when the list changes. */
 function EvidenceList(parent) {
   const el = h('ul', 'evidence', parent);
+  let signature = null;
   return {
     update(vm) {
+      const next = JSON.stringify(vm.evidence);
+      if (next === signature) return;
+      signature = next;
       el.textContent = '';
       for (const e of vm.evidence) {
         const li = h('li', null, el);
@@ -255,31 +325,20 @@ function EvidenceList(parent) {
 function ContextDetails(parent, getDiagnostics) {
   const el = h('div', 'details', parent);
   const section = (title) => {
-    const s = h('section', 'card section', el);
+    const s = h('section', 'section', el);
     h('div', 'h', s, title);
     return s;
   };
-  const rowIn = (s, label) => {
-    const r = h('div', 'row', s);
-    h('span', 'k', r, label);
-    return h('span', 'v', r);
-  };
-  const tagged = (node, text, tag) => {
-    node.textContent = text;
-    if (tag) h('span', `tag ${tag}`, node, tag);
-  };
 
   // Breakdown (top): what the used tokens are made of, then the exact totals.
-  // The percentage and bar are in the summary card only, so they are not repeated here.
+  // The percentage and bar are in the summary only, so they are not repeated here.
   const brk = section('Breakdown');
-  const brkRows = h('div', null, brk);
+  const parts = RowList(brk);
   h('div', 'divider', brk);
-  const usedRow = rowIn(brk, 'Used');
-  const leftRow = rowIn(brk, 'Remaining');
-  const limitRow = rowIn(brk, 'Window');
+  const totals = RowList(brk);
 
   // Confidence: native dropdown, closed by default; open state survives updates (DOM is built once)
-  const conf = h('details', 'card section conf', el);
+  const conf = h('details', 'section conf', el);
   const confHead = h('summary', 'h', conf);
   h('span', null, confHead, 'Confidence');
   const badge = ConfidenceBadge(confHead, true);
@@ -303,52 +362,62 @@ function ContextDetails(parent, getDiagnostics) {
 
   // Model (bottom)
   const mdl = section('Model');
-  const providerRow = rowIn(mdl, 'Provider');
-  const modelRow = rowIn(mdl, 'Model');
-  const planRow = rowIn(mdl, 'Plan');
-  const sourceRow = rowIn(mdl, 'Source');
-  const turnsRow = rowIn(mdl, 'Turns');
+  const modelRows = RowList(mdl);
 
   return {
     el,
     update(vm) {
       // While loading, show dashes rather than zeros
       const tokens = (n) => (vm.ready === false || n === null ? '—' : `${n.toLocaleString()} tokens`);
-      usedRow.textContent = tokens(vm.usedTokens);
-      leftRow.textContent = tokens(vm.remainingTokens);
-      tagged(limitRow, vm.contextLimit ? `${vm.contextLimit.toLocaleString()} tokens` : 'Unknown', vm.limitStatus);
-
-      providerRow.textContent = vm.provider;
-      modelRow.textContent = [vm.model, vm.modelFamily].filter(Boolean).join(' · ');
-      planRow.textContent = vm.plan || 'Unknown';
-      sourceRow.textContent = vm.source || '—';
-      turnsRow.textContent = vm.ready === false ? '—' : String(vm.turns);
-
-      brkRows.textContent = '';
-      for (const b of vm.breakdown) tagged(rowIn(brkRows, b.label), b.value, b.tag);
+      parts.update(vm.breakdown.map(b => ({ label: b.label, value: b.value, tag: b.tag || null })));
+      totals.update([
+        { label: 'Used', value: tokens(vm.usedTokens), tag: null },
+        { label: 'Remaining', value: tokens(vm.remainingTokens), tag: null },
+        { label: 'Window', value: vm.contextLimit ? `${vm.contextLimit.toLocaleString()} tokens` : 'Unknown', tag: vm.limitStatus || null }
+      ]);
 
       badge.update(vm);
       evidence.update(vm);
 
-      warn.textContent = vm.warning || '';
-      warn.style.display = vm.warning ? '' : 'none';
+      setText(warn, vm.warning || '');
+
+      modelRows.update([
+        { label: 'Provider', value: vm.provider, tag: null },
+        { label: 'Model', value: modelText(vm), tag: null },
+        { label: 'Plan', value: vm.plan || 'Unknown', tag: null },
+        { label: 'Source', value: vm.source || '—', tag: null },
+        { label: 'Turns', value: vm.ready === false ? '—' : String(vm.turns), tag: null }
+      ]);
     }
   };
 }
 
+const WIDTH = 300; // One width, collapsed or open: expanding never shifts the card sideways
+const GAP = 16;
+
 export class ContextWidget {
   /**
-   * @param {{ provider?: string, findInput?: () => Element|null, onRefresh?: () => any }} [adapter]
-   *   Provider adapter: display name, a way to find the chat input, and a refresh action. Nothing else is site-specific.
+   * @param {{ provider?: string, findInput?: () => Element|null, onRefresh?: () => any, getDiagnostics?: () => Object }} [adapter]
+   *   Provider adapter: display name, a way to find the chat input, a refresh action and the
+   *   diagnostics source. Nothing else is site-specific.
    */
   constructor(adapter = {}) {
-    this.adapter = { provider: adapter.provider || 'AI', findInput: adapter.findInput || (() => null), onRefresh: adapter.onRefresh || (() => {}) };
+    this.adapter = {
+      provider: adapter.provider || 'AI',
+      findInput: adapter.findInput || (() => null),
+      onRefresh: adapter.onRefresh || (() => {}),
+      // Copy diagnostics source; the provider can check it still matches what is on screen
+      getDiagnostics: adapter.getDiagnostics || (() => this.latestState?.diagnostics)
+    };
     this.hostElement = null;
     this.shadowRoot = null;
     this.isExpanded = false;
     this.isVisible = true;
     this.latestState = null;
     this.parts = null;
+    this._raf = null;
+    this._observedInput = null;
+    this._resizeObserver = null;
   }
 
   mount() {
@@ -357,21 +426,40 @@ export class ContextWidget {
 
     this.hostElement = document.createElement('div');
     this.hostElement.id = 'chatgpt-context-monitor-host';
-    this.hostElement.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;';
+    // Own stacking/paint context so the page's layout and styles cannot leak in or be disturbed
+    this.hostElement.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;contain:layout style;';
     this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
     h('style', null, this.shadowRoot, STYLES);
 
     const root = h('div', 'root', this.shadowRoot);
-    const details = ContextDetails(root, () => this.latestState?.diagnostics);
-    const summary = ContextSummary(root, () => {
+    const card = h('div', 'card', root);
+    const details = ContextDetails(card, () => this.adapter.getDiagnostics());
+    const summary = ContextSummary(card, () => {
       this.isExpanded = !this.isExpanded;
       this.render();
     }, () => this.adapter.onRefresh());
-    this.parts = { root, details, summary };
+    this.parts = { root, card, details, summary };
 
     (document.body || document.documentElement).appendChild(this.hostElement);
-    window.addEventListener('resize', () => this._position());
+    window.addEventListener('resize', () => this._schedulePosition());
+    if (typeof ResizeObserver !== 'undefined') {
+      // The chat input grows while typing; keep clear of it without waiting for a data update
+      this._resizeObserver = new ResizeObserver(() => this._schedulePosition());
+    }
+    // Follow the site's light/dark switch immediately (sites flip a class/attribute on <html>/<body>)
+    const themeWatch = new MutationObserver(() => this._applyTheme());
+    for (const node of [document.documentElement, document.body].filter(Boolean)) {
+      themeWatch.observe(node, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme'] });
+    }
+    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => this._applyTheme());
     this.render();
+  }
+
+  /** Light/dark from the page itself; writes only when it flips. */
+  _applyTheme() {
+    if (!this.parts) return;
+    const { root } = this.parts;
+    setClass(root, ['root', this._isDarkPage() ? 'dark' : '', this.isExpanded ? 'open' : ''].filter(Boolean).join(' '));
   }
 
   /** @param {Object} viewState Output of toWidgetState() */
@@ -385,11 +473,11 @@ export class ContextWidget {
 
   render() {
     if (!this.hostElement || !this.parts) return;
-    this.hostElement.style.display = this.isVisible ? '' : 'none';
-    const { root, details, summary } = this.parts;
+    const display = this.isVisible ? '' : 'none';
+    if (this.hostElement.style.display !== display) this.hostElement.style.display = display;
+    const { details, summary } = this.parts;
 
-    root.classList.toggle('dark', this._isDarkPage());
-    root.classList.toggle('open', this.isExpanded);
+    this._applyTheme();
     summary.setExpanded(this.isExpanded);
 
     const vm = this.latestState || { ready: false, percentage: null, usedTokens: 0, evidence: [], breakdown: [], confidenceLevel: 'LOW', confidence: 0, provider: this.adapter.provider, model: 'Detecting…' };
@@ -420,6 +508,11 @@ export class ContextWidget {
   _composerRect() {
     const input = this.adapter.findInput();
     if (!input || !input.getBoundingClientRect) return null;
+    if (this._resizeObserver && input !== this._observedInput) {
+      if (this._observedInput) this._resizeObserver.unobserve(this._observedInput);
+      this._resizeObserver.observe(input);
+      this._observedInput = input;
+    }
     let box = input;
     let rect = input.getBoundingClientRect();
     for (let el = input.parentElement; el && el !== document.body; el = el.parentElement) {
@@ -432,44 +525,56 @@ export class ContextWidget {
     return box && rect.width > 0 ? rect : null;
   }
 
-  /** Beside the composer when there is room, otherwise right-aligned just above it; corner fallback. */
+  /** Coalesces resize bursts into one layout pass per frame. */
+  _schedulePosition() {
+    if (this._raf) return;
+    const run = () => { this._raf = null; this._position(); };
+    this._raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16);
+  }
+
+  /**
+   * Beside the composer when there is room, otherwise right-aligned just above it; corner fallback.
+   * The placement depends only on the page layout (never on open/closed), and styles are written only
+   * when they change, so updates and expanding never make the card jump.
+   */
   _position() {
     if (!this.hostElement || !this.parts) return;
-    const s = this.hostElement.style;
-    const root = this.parts.root;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const COLLAPSED = 260;
-    const EXPANDED = 360;
+    const width = Math.max(200, Math.min(WIDTH, vw - 24));
     const r = this._composerRect();
-    const besideRoom = r ? vw - r.right - 32 : 0;
-    let width;
-    let bottom = 16;
+    let left = 'auto';
+    let right = '12px';
+    let bottom = GAP;
+    let placement = 'corner';
 
-    // The side is chosen from the collapsed width only, so expanding never makes the widget jump
-    if (r && r.top > 80 && besideRoom >= COLLAPSED) {
-      width = this.isExpanded ? Math.min(EXPANDED, besideRoom) : COLLAPSED;
-      s.left = `${Math.round(r.right + 16)}px`;
-      s.right = 'auto';
+    if (r && r.top > 80 && vw - r.right - 2 * GAP >= width) {
+      placement = 'beside';
+      left = `${Math.round(r.right + GAP)}px`;
+      right = 'auto';
       bottom = Math.max(8, Math.round(vh - r.bottom));
     } else if (r && r.top > 80) {
-      width = Math.min(this.isExpanded ? EXPANDED : COLLAPSED, vw - 24);
-      s.left = 'auto';
-      s.right = `${Math.max(12, Math.round(vw - r.right))}px`;
+      placement = 'above';
+      right = `${Math.max(12, Math.round(vw - r.right))}px`;
       bottom = Math.max(8, Math.round(vh - r.top + 8));
-    } else {
-      width = Math.min(this.isExpanded ? EXPANDED : COLLAPSED, vw - 24);
-      s.left = 'auto';
-      s.right = '12px';
     }
-    root.style.width = `${Math.max(180, width)}px`;
-    s.bottom = `${bottom}px`;
-    // Expanded details grow upward above the summary card; keep them inside the viewport
+
+    const s = this.hostElement.style;
+    if (s.left !== left) s.left = left;
+    if (s.right !== right) s.right = right;
+    if (s.bottom !== `${bottom}px`) s.bottom = `${bottom}px`;
+    const w = `${width}px`;
+    if (this.parts.root.style.width !== w) this.parts.root.style.width = w;
+    if (this.hostElement.dataset.placement !== placement) this.hostElement.dataset.placement = placement;
+
+    // Details open upward above the summary; keep the whole card inside the viewport
     const summaryHeight = this.parts.summary.el.getBoundingClientRect().height || 90;
-    root.style.setProperty('--details-max', `${Math.max(120, vh - bottom - summaryHeight - 24)}px`);
+    const max = `${Math.max(120, vh - bottom - summaryHeight - 24)}px`;
+    if (this.parts.root.style.getPropertyValue('--details-max') !== max) this.parts.root.style.setProperty('--details-max', max);
   }
 
   unmount() {
+    this._resizeObserver?.disconnect();
     this.hostElement?.remove();
     this.hostElement = null;
     this.shadowRoot = null;

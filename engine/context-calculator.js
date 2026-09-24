@@ -163,7 +163,8 @@ export class ContextCalculator {
       isNetworkActive: Boolean(input.networkHealth?.networkAvailable),
       encoding: model.encoding || 'o200k_base',
       conflicts: input.conflicts || [],
-      agreements: input.agreements
+      agreements: input.agreements,
+      evidence: input.evidence
     });
 
     const apiContextLimit = model.apiContextLimit ?? (model.id !== 'unknown' ? (model.contextWindow || contextWindow) : null);

@@ -73,7 +73,8 @@ export class EvidenceMerger {
       return pB - pA;
     });
 
-    const winner = validCandidates[0];
+    // confirmedBy: other reliable sources that reported the same value (provenance of the agreement)
+    const winner = { ...validCandidates[0], confirmedBy: [] };
     const conflicts = [];
 
     // Check for meaningful disagreements among candidates with priority >= 2
@@ -84,6 +85,9 @@ export class EvidenceMerger {
 
       // compareKey lets a field compare normalized identities ("gpt-5-6" vs "GPT-5.6")
       const isDisagreement = this._isDisagreement(fieldName, winner.compareKey ?? winner.value, other.compareKey ?? other.value);
+      if (!isDisagreement && other.source !== winner.source && !winner.confirmedBy.includes(other.source)) {
+        winner.confirmedBy.push(other.source);
+      }
       if (isDisagreement) {
         conflicts.push({
           field: fieldName,

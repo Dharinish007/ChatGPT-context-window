@@ -29,6 +29,9 @@ export class ConversationClient {
     this.fetchSeq = new Map(); // conversationId -> latest request number; older responses never overwrite newer
     this.session = null; // { ok, status, planType, fetchedAt } - safe to expose, holds no token
     this._sessionPromise = null;
+    this._normalized = new WeakMap(); // raw payload -> normalized result (payloads are never mutated)
+    this.onRevalidated = null; // (conversationId) => void, when a background refresh brought new data
+    this.stats = { downloads: 0, cacheHits: 0, staleServed: 0, normalizeReused: 0 };
   }
 
   _origin() {
@@ -142,7 +145,15 @@ export class ConversationClient {
     if (!fetchOptions.force && this.cache.has(conversationId)) {
       const cached = this.cache.get(conversationId);
       if (now - cached.timestamp < this.cacheTtlMs) {
+        this.stats.cacheHits++;
         return { success: true, data: cached.data, fromCache: true };
+      }
+      // Stale-while-revalidate: answer now with the copy we have and refresh it in the background,
+      // so an analysis pass never waits on a full conversation download just because time passed
+      if (fetchOptions.staleWhileRevalidate) {
+        this.stats.staleServed++;
+        this._revalidate(conversationId, cached.data);
+        return { success: true, data: cached.data, fromCache: true, stale: true };
       }
     }
 
@@ -177,10 +188,12 @@ export class ConversationClient {
 
         // /backend-api needs the session bearer token; cookies alone return 401
         await this.getSession();
+        this.stats.downloads++;
         let response = await doFetch();
         if (response.status === 401) {
           // Token expired: refresh the session once and retry
           await this.getSession({ force: true });
+          this.stats.downloads++;
           response = await doFetch();
         }
 
@@ -251,6 +264,23 @@ export class ConversationClient {
     });
     this.activeFetches.set(conversationId, resultPromise);
     return resultPromise;
+  }
+
+  /**
+   * Background refresh of a stale cached copy (one at a time per conversation). Reports only when
+   * the saved conversation actually changed (another tab/device, an edit), so callers re-run then.
+   * @private
+   */
+  _revalidate(conversationId, previous) {
+    if (this.activeFetches.has(conversationId)) return; // A read is already on its way
+    this.fetchConversation(conversationId, { force: true }).then(result => {
+      if (!result.success || result.fromCapture || !result.data || result.data === previous) return;
+      const changed = !previous ||
+        result.data.current_node !== previous.current_node ||
+        result.data.update_time !== previous.update_time ||
+        Object.keys(result.data.mapping || {}).length !== Object.keys(previous.mapping || {}).length;
+      if (changed && typeof this.onRevalidated === 'function') this.onRevalidated(conversationId);
+    }).catch(() => {});
   }
 
   /**
@@ -392,6 +422,18 @@ export class ConversationClient {
    * @returns {{ conversationId: string, title: string, modelSlug: string|null, messages: Array<Object>, attachments: Object }}
    */
   normalizeConversation(conversationPayload) {
+    // Same payload object -> same result: re-walking a long tree on every pass was wasted work
+    if (conversationPayload && typeof conversationPayload === 'object' && this._normalized.has(conversationPayload)) {
+      this.stats.normalizeReused++;
+      return this._normalized.get(conversationPayload);
+    }
+    const result = this._normalizeUncached(conversationPayload);
+    if (conversationPayload && typeof conversationPayload === 'object') this._normalized.set(conversationPayload, result);
+    return result;
+  }
+
+  /** @private */
+  _normalizeUncached(conversationPayload) {
     if (!conversationPayload || !conversationPayload.mapping) {
       return {
         conversationId: null,
