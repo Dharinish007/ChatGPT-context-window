@@ -477,14 +477,25 @@ export class ContextWidget {
     if (this.hostElement.style.display !== display) this.hostElement.style.display = display;
     const { details, summary } = this.parts;
 
-    this._applyTheme();
+    // Theme switches are caught by the attribute observer / media listener; the computed-style check
+    // (a style recalculation on a busy page) runs here at most every 2 s as a safety net
+    const t = Date.now();
+    if (!this._themeCheckedAt || t - this._themeCheckedAt > 2000) {
+      this._themeCheckedAt = t;
+      this._applyTheme();
+    } else {
+      setClass(this.parts.root, this.parts.root.className.replace(/\s*\bopen\b/, '') + (this.isExpanded ? ' open' : ''));
+    }
     summary.setExpanded(this.isExpanded);
 
     const vm = this.latestState || { ready: false, percentage: null, usedTokens: 0, evidence: [], breakdown: [], confidenceLevel: 'LOW', confidence: 0, provider: this.adapter.provider, model: 'Detecting…' };
     summary.update(vm);
     if (this.isExpanded) details.update(vm);
 
-    this._position();
+    // Measuring the chat input right after our DOM writes would force a layout on every update;
+    // one measurement per frame is enough (the first one runs right away so the card never flashes)
+    if (this._positioned) this._schedulePosition();
+    else { this._positioned = true; this._position(); }
   }
 
   /** Theme from the host page's actual background, so it works on any provider. */

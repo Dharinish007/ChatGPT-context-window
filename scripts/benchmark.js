@@ -145,7 +145,7 @@ async function main() {
     await delay(6000);
     results.load = await cdp.eval(`(() => {
       const first = window.__updates.find(u => u.ready && u.used > 0);
-      return { firstDataMs: first ? Math.round(first.t - window.__t0) : null, usedTokens: first?.used ?? null,
+      return { firstDataMs: first ? Math.round(first.t - window.__t0) : null, usedTokens: first?.used ?? null, firstPassPerf: first?.perf?.timings ? Object.fromEntries(Object.entries(first.perf.timings).map(([k, v]) => [k, v.max])) : null,
         blockingMs: Math.round(${blocking('window.__t0', 'window.__t0 + 6000')}),
         updates: window.__updates.length };
     })()`);

@@ -1137,6 +1137,109 @@ const MODEL_TO_ENCODING = Object.freeze({
   'gpt-3.5-turbo': SUPPORTED_ENCODINGS.CL100K_BASE
 });
 
+const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+/** UTF-8 bytes of a string as a one-char-per-byte string (ASCII is returned as is). */
+function utf8ByteString(text) {
+  if (!/[^\x00-\x7f]/.test(text)) return text;
+  const bytes = BpeCounter.textEncoder.encode(text); // Lone surrogates become EF BF BD, as in js-tiktoken
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 8192) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return out;
+}
+
+/**
+ * Count-only byte-pair encoding. Returns exactly js-tiktoken's `encode(text, 'all').length`: the same
+ * special-token split, the same regex pieces, the same lowest-rank-first (leftmost on ties) merge
+ * order. It is faster because:
+ *  - ranks are keyed by the raw byte string (atob of the rank file), not comma-joined byte lists,
+ *    which also makes the one-off table build several times cheaper;
+ *  - after a merge only the two neighbouring pair ranks are recomputed, instead of re-joining every pair;
+ *  - each distinct piece is counted once: BPE of a piece never depends on the surrounding text, and
+ *    conversations repeat the same words constantly (a streamed reply is re-counted many times).
+ * Exactness against js-tiktoken is checked by the tokenizer tests.
+ */
+class BpeCounter {
+  static textEncoder = new TextEncoder();
+
+  constructor(ranks) {
+    this.ranks = new Map();
+    for (const line of ranks.bpe_ranks.split('\n')) {
+      if (!line) continue;
+      const fields = line.split(' '); // "<marker> <offset> <token> <token> ..."
+      const offset = Number.parseInt(fields[1], 10);
+      for (let i = 2; i < fields.length; i++) this.ranks.set(atob(fields[i]), offset + i - 2);
+    }
+    this.pieceRe = new RegExp(ranks.pat_str, 'ug');
+    const specials = Object.keys(ranks.special_tokens || {});
+    this.specialRe = specials.length
+      ? new RegExp(specials.map(s => s.replace(/[\\^$*+?.()|[\]{}]/g, '\\$&')).join('|'), 'g')
+      : null;
+    this.pieces = new Map(); // piece -> token count
+    this.stats = { pieces: 0, pieceHits: 0 };
+  }
+
+  /** @param {string} text */
+  count(text) {
+    let total = 0;
+    let start = 0;
+    while (true) {
+      let next = null;
+      if (this.specialRe) {
+        this.specialRe.lastIndex = start;
+        next = this.specialRe.exec(text);
+      }
+      const end = next ? next.index : text.length;
+      if (end > start) {
+        for (const m of text.substring(start, end).matchAll(this.pieceRe)) total += this.countPiece(m[0]);
+      }
+      if (!next) break;
+      total++; // Every special token is allowed and is a single token
+      start = next.index + next[0].length;
+    }
+    return total;
+  }
+
+  countPiece(piece) {
+    const hit = this.pieces.get(piece);
+    if (hit !== undefined) {
+      this.stats.pieceHits++;
+      return hit;
+    }
+    const n = this.bpeCount(utf8ByteString(piece));
+    if (this.pieces.size >= 200000) this.pieces.clear(); // Bounded; refills with what is in use
+    this.pieces.set(piece, n);
+    this.stats.pieces++;
+    return n;
+  }
+
+  /** Number of tokens BPE produces for one piece given as a byte string. */
+  bpeCount(s) {
+    const n = s.length;
+    if (n === 0) return 0;
+    if (n === 1 || this.ranks.has(s)) return 1;
+    const ranks = this.ranks;
+    const bounds = new Array(n + 1);
+    for (let i = 0; i <= n; i++) bounds[i] = i;
+    const pair = new Array(n - 1); // pair[i]: rank of merging part i with part i + 1
+    for (let i = 0; i < n - 1; i++) pair[i] = ranks.get(s.substring(i, i + 2)) ?? Infinity;
+    while (pair.length > 0) {
+      let min = Infinity;
+      let at = -1;
+      for (let i = 0; i < pair.length; i++) if (pair[i] < min) { min = pair[i]; at = i; }
+      if (at === -1) break;
+      bounds.splice(at + 1, 1);
+      pair.splice(at, 1);
+      if (at > 0) pair[at - 1] = ranks.get(s.substring(bounds[at - 1], bounds[at + 1])) ?? Infinity;
+      if (at < pair.length) pair[at] = ranks.get(s.substring(bounds[at], bounds[at + 2])) ?? Infinity;
+    }
+    // js-tiktoken drops parts without a rank (never happens with byte-level ranks, kept for parity)
+    let count = 0;
+    for (let i = 0; i < bounds.length - 1; i++) if (ranks.has(s.substring(bounds[i], bounds[i + 1]))) count++;
+    return count;
+  }
+}
+
 class Tokenizer {
   constructor(options = {}) {
     // Entries are tiny (numbers); room for several long conversations so switching back is instant
@@ -1148,6 +1251,28 @@ class Tokenizer {
     this.stats = { encoded: 0, encodedChars: 0, cacheHits: 0 };
     // Lazy instance cache: encodingName -> Tiktoken instance
     this.encoders = new Map();
+    // Lazy count-only BPE per encoding (what countTokens uses); encoders above are only built on demand
+    this.counters = new Map();
+  }
+
+  /**
+   * Count-only BPE for an encoding, built once (the rank table build is the one-off startup cost).
+   * @param {string} [encoding]
+   * @returns {BpeCounter}
+   */
+  getCounter(encoding = this.defaultEncoding) {
+    const encName = this.resolveEncoding(encoding);
+    if (!this.counters.has(encName)) {
+      const t0 = clockMs();
+      this.counters.set(encName, new BpeCounter(encName === SUPPORTED_ENCODINGS.CL100K_BASE ? cl100kData : o200kData));
+      this.stats.initMs = Math.round(clockMs() - t0);
+    }
+    return this.counters.get(encName);
+  }
+
+  /** Builds the default encoding's tables ahead of the first count (e.g. while the network is busy). */
+  warm(encoding = this.defaultEncoding) {
+    this.getCounter(encoding);
   }
 
   /**
@@ -1248,9 +1373,13 @@ class Tokenizer {
     if (!text || typeof text !== 'string' || text.length === 0) {
       return 0;
     }
-    const encoder = this.getEncoder(encodingOrModel);
-    const tokens = this.encodeSafely(encoder, text);
-    return tokens ? tokens.length : 0;
+    try {
+      return this.getCounter(encodingOrModel).count(text);
+    } catch (_) {
+      // Unexpected input for the fast path: fall back to the reference encoder
+      const tokens = this.encodeSafely(this.getEncoder(encodingOrModel), text);
+      return tokens ? tokens.length : 0;
+    }
   }
 
   /**
@@ -3231,7 +3360,7 @@ class ConversationClient {
         // Cache the raw data, unless a newer request for this conversation was started meanwhile
         if (isLatest()) {
           // Freshness counts from the response: a slow or early (prefetched) read stays reusable for the full TTL
-          this.cache.set(conversationId, {
+          this._remember(this.cache, conversationId, {
             data: rawData,
             timestamp: Date.now()
           });
@@ -3258,7 +3387,7 @@ class ConversationClient {
       if (result.success) {
         this.failures.delete(conversationId);
         // Keep as last known-good, so one failed refresh never collapses the count to DOM-only
-        if (isLatest()) this.captured.set(conversationId, result.data);
+        if (isLatest()) this._remember(this.captured, conversationId, result.data);
         return result;
       }
       // Our fetch failed: fall back to the last known-good copy (page's own request or our last success)
@@ -3296,9 +3425,20 @@ class ConversationClient {
    */
   ingestConversation(conversationId, data) {
     if (!conversationId || !data || !data.mapping) return;
-    this.captured.set(conversationId, data);
-    this.cache.set(conversationId, { data, timestamp: Date.now() });
+    this._remember(this.captured, conversationId, data);
+    this._remember(this.cache, conversationId, { data, timestamp: Date.now() });
     this.failures.delete(conversationId);
+  }
+
+  /**
+   * Stores a conversation copy, keeping only the most recently used few: full trees are large (MBs),
+   * and these maps used to grow with every conversation opened in the tab.
+   * @private
+   */
+  _remember(map, conversationId, value) {
+    map.delete(conversationId); // Re-insert as most recent
+    map.set(conversationId, value);
+    while (map.size > 3) map.delete(map.keys().next().value);
   }
 
   /**
@@ -3580,6 +3720,20 @@ class MessageExtractor {
     // equal key means the cleaned text is still valid. Entries die with their elements.
     this._textCache = new WeakMap();
     this.stats = { cleaned: 0, reused: 0 };
+    // true while a MutationObserver reports every page change through invalidate(): a cached entry is
+    // then valid until invalidated, so unchanged messages are not even re-read (no textContent walk).
+    this.trustCache = false;
+  }
+
+  /**
+   * A page change at `node`: drops cached text of every element containing it. Text and structure of
+   * an element can only change through a mutation inside it, so this keeps the cache exact.
+   * @param {Node} node Mutation target (text nodes are resolved to their parent)
+   */
+  invalidate(node) {
+    for (let el = node && (node.nodeType === 1 ? node : node.parentElement); el; el = el.parentElement) {
+      this._textCache.delete(el);
+    }
   }
 
   /**
@@ -3588,6 +3742,13 @@ class MessageExtractor {
    * @returns {string}
    */
   _cleanText(element) {
+    if (this.trustCache) {
+      const trusted = this._textCache.get(element);
+      if (trusted) {
+        this.stats.reused++;
+        return trusted.text;
+      }
+    }
     // Text plus element count: structure-only changes (a <br>, new block) alter innerText line breaks
     const elements = typeof element.getElementsByTagName === 'function' ? element.getElementsByTagName('*').length : -1;
     const raw = `${elements}|${element.textContent || ''}`;
@@ -3702,25 +3863,31 @@ class MessageExtractor {
       ".conversation-turn"
     ];
 
-    let best = [];
-    for (const selector of strategies) {
-      const found = this._extractWith(root, selector);
-      if (found.length > best.length) best = found;
+    // Same winner as extracting every strategy (most messages, earliest strategy on ties), but text is
+    // only extracted for strategies that can still win: one strategy yields at most one message per
+    // element it matches, so elements are counted first (cheap) and extraction runs in that order.
+    const candidates = strategies
+      .map((selector, index) => ({ index, turns: this._topTurns(root, selector) }))
+      .sort((a, b) => b.turns.length - a.turns.length || a.index - b.index);
+    let best = null;
+    for (const c of candidates) {
+      if (best && (c.turns.length < best.messages.length || (c.turns.length === best.messages.length && c.index > best.index))) continue;
+      const messages = this._extractFrom(c.turns);
+      if (!best || messages.length > best.messages.length || (messages.length === best.messages.length && c.index < best.index)) {
+        best = { index: c.index, messages };
+      }
     }
-    return best;
+    return best ? best.messages : [];
   }
 
   /**
-   * Extracts messages using one selector strategy.
+   * Top-level matches of a selector (a turn container can wrap a message node).
    * @private
    */
-  _extractWith(root, selector) {
-    const messages = [];
+  _topTurns(root, selector) {
     const turnElements = Array.from(root.querySelectorAll(selector) || []);
     const matched = new Set(turnElements);
-
-    // Keep only top-level matches (a turn container can wrap a message node)
-    const topTurns = turnElements.filter(el => {
+    return turnElements.filter(el => {
       let parent = el.parentElement;
       while (parent && parent !== root) {
         if (matched.has(parent)) return false;
@@ -3728,7 +3895,19 @@ class MessageExtractor {
       }
       return true;
     });
+  }
 
+  /**
+   * Extracts messages using one selector strategy.
+   * @private
+   */
+  _extractWith(root, selector) {
+    return this._extractFrom(this._topTurns(root, selector));
+  }
+
+  /** @private */
+  _extractFrom(topTurns) {
+    const messages = [];
     for (let i = 0; i < topTurns.length; i++) {
       const turnEl = topTurns[i];
       const role = this.detectRole(turnEl);
@@ -4353,6 +4532,13 @@ class ModelDetector {
  * to user prompts or assistant responses, estimating token impact where defensible.
  */
 
+
+
+const ATTACHMENT_GROUPS = [
+  "img[alt*='Uploaded image'], [data-testid='attachment-thumbnail']",
+  "[data-testid='file-attachment'], div[class*='file-pill'], div[class*='file-attachment']"
+];
+
 class AttachmentDetector {
   /**
    * Scans DOM for observable attachments.
@@ -4364,8 +4550,10 @@ class AttachmentDetector {
     let totalTokens = 0;
     let hasUnknown = false;
 
+    // One page traversal for both kinds (see queryGroups in tool-detector.js)
+    const [imageElements, fileChips] = queryGroups(root, ATTACHMENT_GROUPS);
+
     // 1. Detect uploaded image thumbnails
-    const imageElements = root.querySelectorAll("img[alt*='Uploaded image'], [data-testid='attachment-thumbnail']");
     for (let i = 0; i < imageElements.length; i++) {
       // OpenAI vision models use ~85 base tokens (low detail) or ~765-1105 (high detail tiles)
       // We use a conservative calibrated estimate of ~300 tokens per image
@@ -4381,7 +4569,6 @@ class AttachmentDetector {
     }
 
     // 2. Detect document and code file chips
-    const fileChips = root.querySelectorAll("[data-testid='file-attachment'], div[class*='file-pill'], div[class*='file-attachment']");
     for (let i = 0; i < fileChips.length; i++) {
       const chip = fileChips[i];
       const nameEl = chip.querySelector("div[class*='font-semibold'], span[class*='text-sm'], .truncate");
@@ -4426,6 +4613,29 @@ class AttachmentDetector {
  * remains classified as UNKNOWN.
  */
 
+// One selector group per tool type (same selectors as before, now read in a single page query)
+const TOOL_GROUPS = [
+  "button[aria-label*='Searched'], div[class*='search-pill'], [data-testid='web-search-citations']",
+  "div[data-testid='code-execution'], button[aria-label*='Ran Python'], button[aria-label*='Finished analyzing']",
+  "div[data-testid='memory-updated'], button[aria-label*='Memory updated'], button[aria-label*='Memory accessed']",
+  "[data-testid='canvas-container'], button[aria-label*='Open canvas']",
+  "[data-testid='mcp-tool-pill'], [data-testid='connected-app-pill'], button[aria-label*='Used tool']"
+];
+
+/**
+ * Elements matching each selector group, in document order, from ONE page traversal instead of one per
+ * group (an element matching several groups is listed in each, exactly as separate queries did).
+ * @param {Document|Element} root
+ * @param {string[]} groups
+ * @returns {Element[][]}
+ */
+function queryGroups(root, groups) {
+  const all = Array.from(root.querySelectorAll(groups.join(', ')) || []);
+  if (all.length === 0) return groups.map(() => []);
+  if (typeof all[0].matches !== 'function') return groups.map(g => Array.from(root.querySelectorAll(g) || []));
+  return groups.map(g => all.filter(el => el.matches(g)));
+}
+
 class ToolDetector {
   /**
    * Scans DOM for tool indicators.
@@ -4434,9 +4644,9 @@ class ToolDetector {
    */
   detect(root = document) {
     const tools = [];
+    const [searchChips, codeExecEls, memoryEls, canvasEls, appEls] = queryGroups(root, TOOL_GROUPS);
 
     // 1. Web Search
-    const searchChips = root.querySelectorAll("button[aria-label*='Searched'], div[class*='search-pill'], [data-testid='web-search-citations']");
     if (searchChips && searchChips.length > 0) {
       tools.push({
         type: 'web_search',
@@ -4447,7 +4657,6 @@ class ToolDetector {
     }
 
     // 2. Python / Code Interpreter / Advanced Data Analysis
-    const codeExecEls = root.querySelectorAll("div[data-testid='code-execution'], button[aria-label*='Ran Python'], button[aria-label*='Finished analyzing']");
     if (codeExecEls && codeExecEls.length > 0) {
       tools.push({
         type: 'code_interpreter',
@@ -4458,7 +4667,6 @@ class ToolDetector {
     }
 
     // 3. Memory Updates or Access
-    const memoryEls = root.querySelectorAll("div[data-testid='memory-updated'], button[aria-label*='Memory updated'], button[aria-label*='Memory accessed']");
     if (memoryEls && memoryEls.length > 0) {
       tools.push({
         type: 'memory',
@@ -4469,7 +4677,6 @@ class ToolDetector {
     }
 
     // 4. Canvas / Artifacts
-    const canvasEls = root.querySelectorAll("[data-testid='canvas-container'], button[aria-label*='Open canvas']");
     if (canvasEls && canvasEls.length > 0) {
       tools.push({
         type: 'canvas',
@@ -4480,7 +4687,6 @@ class ToolDetector {
     }
 
     // 5. Apps / MCP / Custom GPT Tools
-    const appEls = root.querySelectorAll("[data-testid='mcp-tool-pill'], [data-testid='connected-app-pill'], button[aria-label*='Used tool']");
     if (appEls && appEls.length > 0) {
       tools.push({
         type: 'apps_mcp',
@@ -5085,14 +5291,25 @@ class ContextWidget {
     if (this.hostElement.style.display !== display) this.hostElement.style.display = display;
     const { details, summary } = this.parts;
 
-    this._applyTheme();
+    // Theme switches are caught by the attribute observer / media listener; the computed-style check
+    // (a style recalculation on a busy page) runs here at most every 2 s as a safety net
+    const t = Date.now();
+    if (!this._themeCheckedAt || t - this._themeCheckedAt > 2000) {
+      this._themeCheckedAt = t;
+      this._applyTheme();
+    } else {
+      setClass(this.parts.root, this.parts.root.className.replace(/\s*\bopen\b/, '') + (this.isExpanded ? ' open' : ''));
+    }
     summary.setExpanded(this.isExpanded);
 
     const vm = this.latestState || { ready: false, percentage: null, usedTokens: 0, evidence: [], breakdown: [], confidenceLevel: 'LOW', confidence: 0, provider: this.adapter.provider, model: 'Detecting…' };
     summary.update(vm);
     if (this.isExpanded) details.update(vm);
 
-    this._position();
+    // Measuring the chat input right after our DOM writes would force a layout on every update;
+    // one measurement per frame is enough (the first one runs right away so the card never flashes)
+    if (this._positioned) this._schedulePosition();
+    else { this._positioned = true; this._position(); }
   }
 
   /** Theme from the host page's actual background, so it works on any provider. */
@@ -5206,7 +5423,10 @@ class ChatGPTDOMObserver {
    */
   constructor(options = {}) {
     this.onChange = options.onChange || (() => {});
+    // Every mutation batch, before filtering (lets caches drop entries for changed elements)
+    this.onMutations = options.onMutations || null;
     this.debounceMs = options.debounceMs || 120;
+    this._streamCheckAt = 0;
     // The chat input of the site (typing there never changes the conversation's context)
     this.composerSelector = options.composerSelector || '#prompt-textarea';
     // Upper bound on how long a burst of mutations can postpone an update. Without it, a page that
@@ -5270,14 +5490,21 @@ class ChatGPTDOMObserver {
    * @param {MutationRecord[]} mutations 
    */
   handleMutations(mutations) {
+    if (this.onMutations && Array.isArray(mutations)) this.onMutations(mutations);
     // Typing in the chat input, the sidebar list and our own widget cannot change the conversation's
     // context; skipping them removes most idle work (every keystroke used to start a full pass)
     if (Array.isArray(mutations) && mutations.length > 0 && !mutations.some(m => this._isRelevant(m))) {
       this.ignoredMutations++;
       return;
     }
-    const streamingNow = this.checkIsStreaming();
-    this.isStreaming = streamingNow;
+    // Four whole-document queries: at most every 250 ms (a streaming page mutates ~60 times a second;
+    // the flag only picks the debounce delay)
+    const t = Date.now();
+    if (t - this._streamCheckAt >= 250) {
+      this._streamCheckAt = t;
+      this.isStreaming = this.checkIsStreaming();
+    }
+    const streamingNow = this.isStreaming;
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
@@ -5583,16 +5810,18 @@ class ContentScriptCoordinator {
 
     // Start DOM observing
     this.domObserver = new ChatGPTDOMObserver({
-      onChange: (event) => this.handleDOMChange(event)
+      onChange: (event) => this.handleDOMChange(event),
+      // Changed elements drop their cached text; unchanged messages are reused without re-reading
+      onMutations: (records) => { for (const r of records) this.messageExtractor.invalidate(r.target); }
     });
+    this.messageExtractor.trustCache = true;
     this.domObserver.start();
 
     // Start Network Intelligence observer (Group C); no-op if prefetch() already started it
     this.requestObserver.start();
 
-    // Build the BPE encoder (~0.5-2s of CPU) while the first pass waits on the network,
-    // not after the response arrives
-    this.tokenizer.getEncoder();
+    // Build the BPE rank table (one-off, ~0.1 s) while the first pass waits on the network
+    this.tokenizer.warm();
 
     // Toolbar icon click (background service worker) shows / hides the widget
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
@@ -5786,12 +6015,18 @@ class ContentScriptCoordinator {
       // 2. Read the page once per pass (each detector used to run up to three times per pass)
       const tDom = now();
       const rawDomMessages = this.messageExtractor.extractMessages(document);
+      this.perf.record('domMessagesMs', now() - tDom);
       const domAttachments = this.attachmentDetector.detect(document);
       // Pass the raw slug (not the resolved family key) so the UI shows the real model name
       const domModelRaw = this.modelDetector.detectRawModelString(document);
       const domModel = this.modelDetector.resolveModel(domModelRaw);
       const domTools = this.toolDetector.detect(document);
-      const domPlan = this.planDetector.detect(document);
+      // The plan is account-level and the detector reads the whole sidebar (layout + every link), so it
+      // is re-read at most every 5 s, and always on Refresh / navigation (the session API is primary)
+      if (!this._domPlan || event.isRefresh || event.isNavigation || Date.now() - this._domPlan.at > 5000) {
+        this._domPlan = { at: Date.now(), value: this.planDetector.detect(document) };
+      }
+      const domPlan = this._domPlan.value;
       this.perf.record('domScanMs', now() - tDom);
 
       // 3. Detect model specifications with provenance
@@ -6344,6 +6579,19 @@ class ContentScriptCoordinator {
 
 // element -> { raw, text }: cleaning clones the node, so unchanged elements reuse the last result
 const textCache = new WeakMap();
+// Set while a MutationObserver reports every page change through invalidateText(): cached text is
+// then trusted without re-reading the element.
+const textTrust = { enabled: false };
+
+/** Page change at `node`: drop cached text of every element containing it. */
+function invalidateText(node) {
+  for (let el = node && (node.nodeType === 1 ? node : node.parentElement); el; el = el.parentElement) textCache.delete(el);
+}
+
+/** Trust cached text while mutations are being reported (see invalidateText). */
+function trustTextCache(enabled) {
+  textTrust.enabled = Boolean(enabled);
+}
 
 /**
  * Visible text of a message element without UI chrome (buttons, screen-reader labels, thinking).
@@ -6353,6 +6601,10 @@ const textCache = new WeakMap();
  */
 function cleanText(el, removeSelector) {
   if (!el) return '';
+  if (textTrust.enabled) {
+    const trusted = textCache.get(el);
+    if (trusted) return trusted.text;
+  }
   const count = typeof el.getElementsByTagName === 'function' ? el.getElementsByTagName('*').length : -1;
   const raw = `${count}|${el.textContent || ''}`;
   const hit = textCache.get(el);
@@ -6650,6 +6902,7 @@ function providerForHost(hostname) {
 
 
 
+
 const API_TTL_MS = 60000; // Saved copy stays fresh for a minute; a reply finishing re-reads it at once
 const API_BACKOFF_MS = 15000; // After a failed read, wait before trying again (Refresh skips this)
 
@@ -6679,10 +6932,13 @@ class ProviderCoordinator {
     this.overlayUI.mount();
     this.domObserver = new ChatGPTDOMObserver({
       onChange: (event) => this.handleDOMChange(event),
-      composerSelector: this.provider.inputSelector
+      composerSelector: this.provider.inputSelector,
+      // Changed elements drop their cached text; unchanged messages are reused without re-reading
+      onMutations: (records) => { for (const r of records) invalidateText(r.target); }
     });
+    trustTextCache(true);
     this.domObserver.start();
-    this.tokenizer.getEncoder(); // Build the BPE tables while the first read is in flight
+    this.tokenizer.warm(); // Build the BPE tables while the first read is in flight
     if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
       chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request?.type !== 'TOGGLE_OVERLAY') return false;

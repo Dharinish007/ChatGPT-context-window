@@ -5,6 +5,13 @@
  * to user prompts or assistant responses, estimating token impact where defensible.
  */
 
+import { queryGroups } from './tool-detector.js';
+
+const ATTACHMENT_GROUPS = [
+  "img[alt*='Uploaded image'], [data-testid='attachment-thumbnail']",
+  "[data-testid='file-attachment'], div[class*='file-pill'], div[class*='file-attachment']"
+];
+
 export class AttachmentDetector {
   /**
    * Scans DOM for observable attachments.
@@ -16,8 +23,10 @@ export class AttachmentDetector {
     let totalTokens = 0;
     let hasUnknown = false;
 
+    // One page traversal for both kinds (see queryGroups in tool-detector.js)
+    const [imageElements, fileChips] = queryGroups(root, ATTACHMENT_GROUPS);
+
     // 1. Detect uploaded image thumbnails
-    const imageElements = root.querySelectorAll("img[alt*='Uploaded image'], [data-testid='attachment-thumbnail']");
     for (let i = 0; i < imageElements.length; i++) {
       // OpenAI vision models use ~85 base tokens (low detail) or ~765-1105 (high detail tiles)
       // We use a conservative calibrated estimate of ~300 tokens per image
@@ -33,7 +42,6 @@ export class AttachmentDetector {
     }
 
     // 2. Detect document and code file chips
-    const fileChips = root.querySelectorAll("[data-testid='file-attachment'], div[class*='file-pill'], div[class*='file-attachment']");
     for (let i = 0; i < fileChips.length; i++) {
       const chip = fileChips[i];
       const nameEl = chip.querySelector("div[class*='font-semibold'], span[class*='text-sm'], .truncate");

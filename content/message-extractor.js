@@ -14,6 +14,20 @@ export class MessageExtractor {
     // equal key means the cleaned text is still valid. Entries die with their elements.
     this._textCache = new WeakMap();
     this.stats = { cleaned: 0, reused: 0 };
+    // true while a MutationObserver reports every page change through invalidate(): a cached entry is
+    // then valid until invalidated, so unchanged messages are not even re-read (no textContent walk).
+    this.trustCache = false;
+  }
+
+  /**
+   * A page change at `node`: drops cached text of every element containing it. Text and structure of
+   * an element can only change through a mutation inside it, so this keeps the cache exact.
+   * @param {Node} node Mutation target (text nodes are resolved to their parent)
+   */
+  invalidate(node) {
+    for (let el = node && (node.nodeType === 1 ? node : node.parentElement); el; el = el.parentElement) {
+      this._textCache.delete(el);
+    }
   }
 
   /**
@@ -22,6 +36,13 @@ export class MessageExtractor {
    * @returns {string}
    */
   _cleanText(element) {
+    if (this.trustCache) {
+      const trusted = this._textCache.get(element);
+      if (trusted) {
+        this.stats.reused++;
+        return trusted.text;
+      }
+    }
     // Text plus element count: structure-only changes (a <br>, new block) alter innerText line breaks
     const elements = typeof element.getElementsByTagName === 'function' ? element.getElementsByTagName('*').length : -1;
     const raw = `${elements}|${element.textContent || ''}`;
@@ -136,25 +157,31 @@ export class MessageExtractor {
       ".conversation-turn"
     ];
 
-    let best = [];
-    for (const selector of strategies) {
-      const found = this._extractWith(root, selector);
-      if (found.length > best.length) best = found;
+    // Same winner as extracting every strategy (most messages, earliest strategy on ties), but text is
+    // only extracted for strategies that can still win: one strategy yields at most one message per
+    // element it matches, so elements are counted first (cheap) and extraction runs in that order.
+    const candidates = strategies
+      .map((selector, index) => ({ index, turns: this._topTurns(root, selector) }))
+      .sort((a, b) => b.turns.length - a.turns.length || a.index - b.index);
+    let best = null;
+    for (const c of candidates) {
+      if (best && (c.turns.length < best.messages.length || (c.turns.length === best.messages.length && c.index > best.index))) continue;
+      const messages = this._extractFrom(c.turns);
+      if (!best || messages.length > best.messages.length || (messages.length === best.messages.length && c.index < best.index)) {
+        best = { index: c.index, messages };
+      }
     }
-    return best;
+    return best ? best.messages : [];
   }
 
   /**
-   * Extracts messages using one selector strategy.
+   * Top-level matches of a selector (a turn container can wrap a message node).
    * @private
    */
-  _extractWith(root, selector) {
-    const messages = [];
+  _topTurns(root, selector) {
     const turnElements = Array.from(root.querySelectorAll(selector) || []);
     const matched = new Set(turnElements);
-
-    // Keep only top-level matches (a turn container can wrap a message node)
-    const topTurns = turnElements.filter(el => {
+    return turnElements.filter(el => {
       let parent = el.parentElement;
       while (parent && parent !== root) {
         if (matched.has(parent)) return false;
@@ -162,7 +189,19 @@ export class MessageExtractor {
       }
       return true;
     });
+  }
 
+  /**
+   * Extracts messages using one selector strategy.
+   * @private
+   */
+  _extractWith(root, selector) {
+    return this._extractFrom(this._topTurns(root, selector));
+  }
+
+  /** @private */
+  _extractFrom(topTurns) {
+    const messages = [];
     for (let i = 0; i < topTurns.length; i++) {
       const turnEl = topTurns[i];
       const role = this.detectRole(turnEl);

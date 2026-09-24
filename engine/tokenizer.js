@@ -40,6 +40,109 @@ export const MODEL_TO_ENCODING = Object.freeze({
   'gpt-3.5-turbo': SUPPORTED_ENCODINGS.CL100K_BASE
 });
 
+const clockMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+/** UTF-8 bytes of a string as a one-char-per-byte string (ASCII is returned as is). */
+function utf8ByteString(text) {
+  if (!/[^\x00-\x7f]/.test(text)) return text;
+  const bytes = BpeCounter.textEncoder.encode(text); // Lone surrogates become EF BF BD, as in js-tiktoken
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 8192) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return out;
+}
+
+/**
+ * Count-only byte-pair encoding. Returns exactly js-tiktoken's `encode(text, 'all').length`: the same
+ * special-token split, the same regex pieces, the same lowest-rank-first (leftmost on ties) merge
+ * order. It is faster because:
+ *  - ranks are keyed by the raw byte string (atob of the rank file), not comma-joined byte lists,
+ *    which also makes the one-off table build several times cheaper;
+ *  - after a merge only the two neighbouring pair ranks are recomputed, instead of re-joining every pair;
+ *  - each distinct piece is counted once: BPE of a piece never depends on the surrounding text, and
+ *    conversations repeat the same words constantly (a streamed reply is re-counted many times).
+ * Exactness against js-tiktoken is checked by the tokenizer tests.
+ */
+export class BpeCounter {
+  static textEncoder = new TextEncoder();
+
+  constructor(ranks) {
+    this.ranks = new Map();
+    for (const line of ranks.bpe_ranks.split('\n')) {
+      if (!line) continue;
+      const fields = line.split(' '); // "<marker> <offset> <token> <token> ..."
+      const offset = Number.parseInt(fields[1], 10);
+      for (let i = 2; i < fields.length; i++) this.ranks.set(atob(fields[i]), offset + i - 2);
+    }
+    this.pieceRe = new RegExp(ranks.pat_str, 'ug');
+    const specials = Object.keys(ranks.special_tokens || {});
+    this.specialRe = specials.length
+      ? new RegExp(specials.map(s => s.replace(/[\\^$*+?.()|[\]{}]/g, '\\$&')).join('|'), 'g')
+      : null;
+    this.pieces = new Map(); // piece -> token count
+    this.stats = { pieces: 0, pieceHits: 0 };
+  }
+
+  /** @param {string} text */
+  count(text) {
+    let total = 0;
+    let start = 0;
+    while (true) {
+      let next = null;
+      if (this.specialRe) {
+        this.specialRe.lastIndex = start;
+        next = this.specialRe.exec(text);
+      }
+      const end = next ? next.index : text.length;
+      if (end > start) {
+        for (const m of text.substring(start, end).matchAll(this.pieceRe)) total += this.countPiece(m[0]);
+      }
+      if (!next) break;
+      total++; // Every special token is allowed and is a single token
+      start = next.index + next[0].length;
+    }
+    return total;
+  }
+
+  countPiece(piece) {
+    const hit = this.pieces.get(piece);
+    if (hit !== undefined) {
+      this.stats.pieceHits++;
+      return hit;
+    }
+    const n = this.bpeCount(utf8ByteString(piece));
+    if (this.pieces.size >= 200000) this.pieces.clear(); // Bounded; refills with what is in use
+    this.pieces.set(piece, n);
+    this.stats.pieces++;
+    return n;
+  }
+
+  /** Number of tokens BPE produces for one piece given as a byte string. */
+  bpeCount(s) {
+    const n = s.length;
+    if (n === 0) return 0;
+    if (n === 1 || this.ranks.has(s)) return 1;
+    const ranks = this.ranks;
+    const bounds = new Array(n + 1);
+    for (let i = 0; i <= n; i++) bounds[i] = i;
+    const pair = new Array(n - 1); // pair[i]: rank of merging part i with part i + 1
+    for (let i = 0; i < n - 1; i++) pair[i] = ranks.get(s.substring(i, i + 2)) ?? Infinity;
+    while (pair.length > 0) {
+      let min = Infinity;
+      let at = -1;
+      for (let i = 0; i < pair.length; i++) if (pair[i] < min) { min = pair[i]; at = i; }
+      if (at === -1) break;
+      bounds.splice(at + 1, 1);
+      pair.splice(at, 1);
+      if (at > 0) pair[at - 1] = ranks.get(s.substring(bounds[at - 1], bounds[at + 1])) ?? Infinity;
+      if (at < pair.length) pair[at] = ranks.get(s.substring(bounds[at], bounds[at + 2])) ?? Infinity;
+    }
+    // js-tiktoken drops parts without a rank (never happens with byte-level ranks, kept for parity)
+    let count = 0;
+    for (let i = 0; i < bounds.length - 1; i++) if (ranks.has(s.substring(bounds[i], bounds[i + 1]))) count++;
+    return count;
+  }
+}
+
 export class Tokenizer {
   constructor(options = {}) {
     // Entries are tiny (numbers); room for several long conversations so switching back is instant
@@ -51,6 +154,28 @@ export class Tokenizer {
     this.stats = { encoded: 0, encodedChars: 0, cacheHits: 0 };
     // Lazy instance cache: encodingName -> Tiktoken instance
     this.encoders = new Map();
+    // Lazy count-only BPE per encoding (what countTokens uses); encoders above are only built on demand
+    this.counters = new Map();
+  }
+
+  /**
+   * Count-only BPE for an encoding, built once (the rank table build is the one-off startup cost).
+   * @param {string} [encoding]
+   * @returns {BpeCounter}
+   */
+  getCounter(encoding = this.defaultEncoding) {
+    const encName = this.resolveEncoding(encoding);
+    if (!this.counters.has(encName)) {
+      const t0 = clockMs();
+      this.counters.set(encName, new BpeCounter(encName === SUPPORTED_ENCODINGS.CL100K_BASE ? cl100kData : o200kData));
+      this.stats.initMs = Math.round(clockMs() - t0);
+    }
+    return this.counters.get(encName);
+  }
+
+  /** Builds the default encoding's tables ahead of the first count (e.g. while the network is busy). */
+  warm(encoding = this.defaultEncoding) {
+    this.getCounter(encoding);
   }
 
   /**
@@ -151,9 +276,13 @@ export class Tokenizer {
     if (!text || typeof text !== 'string' || text.length === 0) {
       return 0;
     }
-    const encoder = this.getEncoder(encodingOrModel);
-    const tokens = this.encodeSafely(encoder, text);
-    return tokens ? tokens.length : 0;
+    try {
+      return this.getCounter(encodingOrModel).count(text);
+    } catch (_) {
+      // Unexpected input for the fast path: fall back to the reference encoder
+      const tokens = this.encodeSafely(this.getEncoder(encodingOrModel), text);
+      return tokens ? tokens.length : 0;
+    }
   }
 
   /**

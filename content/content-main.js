@@ -132,16 +132,18 @@ export class ContentScriptCoordinator {
 
     // Start DOM observing
     this.domObserver = new ChatGPTDOMObserver({
-      onChange: (event) => this.handleDOMChange(event)
+      onChange: (event) => this.handleDOMChange(event),
+      // Changed elements drop their cached text; unchanged messages are reused without re-reading
+      onMutations: (records) => { for (const r of records) this.messageExtractor.invalidate(r.target); }
     });
+    this.messageExtractor.trustCache = true;
     this.domObserver.start();
 
     // Start Network Intelligence observer (Group C); no-op if prefetch() already started it
     this.requestObserver.start();
 
-    // Build the BPE encoder (~0.5-2s of CPU) while the first pass waits on the network,
-    // not after the response arrives
-    this.tokenizer.getEncoder();
+    // Build the BPE rank table (one-off, ~0.1 s) while the first pass waits on the network
+    this.tokenizer.warm();
 
     // Toolbar icon click (background service worker) shows / hides the widget
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
@@ -335,12 +337,18 @@ export class ContentScriptCoordinator {
       // 2. Read the page once per pass (each detector used to run up to three times per pass)
       const tDom = now();
       const rawDomMessages = this.messageExtractor.extractMessages(document);
+      this.perf.record('domMessagesMs', now() - tDom);
       const domAttachments = this.attachmentDetector.detect(document);
       // Pass the raw slug (not the resolved family key) so the UI shows the real model name
       const domModelRaw = this.modelDetector.detectRawModelString(document);
       const domModel = this.modelDetector.resolveModel(domModelRaw);
       const domTools = this.toolDetector.detect(document);
-      const domPlan = this.planDetector.detect(document);
+      // The plan is account-level and the detector reads the whole sidebar (layout + every link), so it
+      // is re-read at most every 5 s, and always on Refresh / navigation (the session API is primary)
+      if (!this._domPlan || event.isRefresh || event.isNavigation || Date.now() - this._domPlan.at > 5000) {
+        this._domPlan = { at: Date.now(), value: this.planDetector.detect(document) };
+      }
+      const domPlan = this._domPlan.value;
       this.perf.record('domScanMs', now() - tDom);
 
       // 3. Detect model specifications with provenance

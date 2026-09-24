@@ -19,6 +19,7 @@ import { runAccuracyTests } from './unit/accuracy.test.js';
 import { runFinalFixesTests } from './unit/final-fixes.test.js';
 import { runConfidenceDiagnosticsTests } from './unit/confidence-diagnostics.test.js';
 import { runProvidersTests } from './unit/providers.test.js';
+import { runPerformanceTests } from './unit/performance.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -129,6 +130,12 @@ console.log('');
 const r17 = await runProvidersTests();
 totalPassed += r17.passed;
 totalFailed += r17.failed;
+console.log('');
+
+// 18. Performance fast paths are exactly equivalent to the slow ones
+const r18 = runPerformanceTests();
+totalPassed += r18.passed;
+totalFailed += r18.failed;
 console.log('');
 
 const t1 = performance.now();

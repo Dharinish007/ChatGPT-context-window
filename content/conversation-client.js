@@ -226,7 +226,7 @@ export class ConversationClient {
         // Cache the raw data, unless a newer request for this conversation was started meanwhile
         if (isLatest()) {
           // Freshness counts from the response: a slow or early (prefetched) read stays reusable for the full TTL
-          this.cache.set(conversationId, {
+          this._remember(this.cache, conversationId, {
             data: rawData,
             timestamp: Date.now()
           });
@@ -253,7 +253,7 @@ export class ConversationClient {
       if (result.success) {
         this.failures.delete(conversationId);
         // Keep as last known-good, so one failed refresh never collapses the count to DOM-only
-        if (isLatest()) this.captured.set(conversationId, result.data);
+        if (isLatest()) this._remember(this.captured, conversationId, result.data);
         return result;
       }
       // Our fetch failed: fall back to the last known-good copy (page's own request or our last success)
@@ -291,9 +291,20 @@ export class ConversationClient {
    */
   ingestConversation(conversationId, data) {
     if (!conversationId || !data || !data.mapping) return;
-    this.captured.set(conversationId, data);
-    this.cache.set(conversationId, { data, timestamp: Date.now() });
+    this._remember(this.captured, conversationId, data);
+    this._remember(this.cache, conversationId, { data, timestamp: Date.now() });
     this.failures.delete(conversationId);
+  }
+
+  /**
+   * Stores a conversation copy, keeping only the most recently used few: full trees are large (MBs),
+   * and these maps used to grow with every conversation opened in the tab.
+   * @private
+   */
+  _remember(map, conversationId, value) {
+    map.delete(conversationId); // Re-insert as most recent
+    map.set(conversationId, value);
+    while (map.size > 3) map.delete(map.keys().next().value);
   }
 
   /**

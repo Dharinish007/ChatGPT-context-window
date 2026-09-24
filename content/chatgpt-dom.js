@@ -13,7 +13,10 @@ export class ChatGPTDOMObserver {
    */
   constructor(options = {}) {
     this.onChange = options.onChange || (() => {});
+    // Every mutation batch, before filtering (lets caches drop entries for changed elements)
+    this.onMutations = options.onMutations || null;
     this.debounceMs = options.debounceMs || 120;
+    this._streamCheckAt = 0;
     // The chat input of the site (typing there never changes the conversation's context)
     this.composerSelector = options.composerSelector || '#prompt-textarea';
     // Upper bound on how long a burst of mutations can postpone an update. Without it, a page that
@@ -77,14 +80,21 @@ export class ChatGPTDOMObserver {
    * @param {MutationRecord[]} mutations 
    */
   handleMutations(mutations) {
+    if (this.onMutations && Array.isArray(mutations)) this.onMutations(mutations);
     // Typing in the chat input, the sidebar list and our own widget cannot change the conversation's
     // context; skipping them removes most idle work (every keystroke used to start a full pass)
     if (Array.isArray(mutations) && mutations.length > 0 && !mutations.some(m => this._isRelevant(m))) {
       this.ignoredMutations++;
       return;
     }
-    const streamingNow = this.checkIsStreaming();
-    this.isStreaming = streamingNow;
+    // Four whole-document queries: at most every 250 ms (a streaming page mutates ~60 times a second;
+    // the flag only picks the debounce delay)
+    const t = Date.now();
+    if (t - this._streamCheckAt >= 250) {
+      this._streamCheckAt = t;
+      this.isStreaming = this.checkIsStreaming();
+    }
+    const streamingNow = this.isStreaming;
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);

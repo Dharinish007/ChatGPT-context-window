@@ -21,10 +21,10 @@ function sseResponse(events) {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
-function loadInterceptor(respond) {
+function loadInterceptor(respond, pathname = '/') {
   const posted = [];
   const window = {
-    location: { origin: 'https://chatgpt.com', href: 'https://chatgpt.com/' },
+    location: { origin: 'https://chatgpt.com', href: `https://chatgpt.com${pathname}`, pathname },
     fetch: async (url, init) => respond(url, init),
     postMessage: (msg) => posted.push(msg),
     addEventListener: (type, fn) => { if (type === 'message') listeners.push(fn); }
@@ -104,9 +104,10 @@ export async function runInterceptorTests() {
   // 4b. Early events are replayed when the isolated listener connects late
   {
     const tree = { conversation_id: '0a1b2c3d-4e5f', mapping: { a: { id: 'a', message: null } } };
+    // The page has that conversation open (/c/<id>) and downloads it
     const { window, posted, ping } = loadInterceptor((url) => new Response(JSON.stringify(
       url.includes('accounts') ? { accounts: { default: { account: { plan_type: 'pro' } } } } : tree
-    ), { status: 200 }));
+    ), { status: 200 }), '/c/0a1b2c3d-4e5f');
     await window.fetch('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', { method: 'GET' });
     await window.fetch('https://chatgpt.com/backend-api/conversation/0a1b2c3d-4e5f', { method: 'GET' });
     await settle();
@@ -116,6 +117,15 @@ export async function runInterceptorTests() {
     const conv = posted.find(m => m.eventType === 'CONVERSATION_LOADED');
     assert('Plan event replayed to a late listener', plan && plan.payload.planType === 'pro');
     assert('Page-loaded conversation (full tree) replayed to a late listener', conv && conv.payload.data && conv.payload.conversationId === '0a1b2c3d-4e5f');
+  }
+
+  // 4c. Conversations the page only prefetches (sidebar hover) are not parsed or forwarded
+  {
+    const other = { conversation_id: '9f8e7d6c-5b4a', mapping: { a: { id: 'a', message: null } } };
+    const { window, posted } = loadInterceptor(() => new Response(JSON.stringify(other), { status: 200 }), '/c/0a1b2c3d-4e5f');
+    await window.fetch('https://chatgpt.com/backend-api/conversation/9f8e7d6c-5b4a', { method: 'GET' });
+    await settle();
+    assert('Prefetched other conversation is not forwarded (no parse, no cross-world copy)', !posted.some(m => m.eventType === 'CONVERSATION_LOADED'));
   }
 
   // 5. /backend-api/memories is not mistaken for /backend-api/me

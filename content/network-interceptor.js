@@ -499,6 +499,10 @@
               const cloned = response.clone();
               cloned.text().then(text => {
                 try {
+                  // Only the conversation on screen is used: the page also prefetches others (e.g. on
+                  // sidebar hover), and parsing + copying each multi-MB tree across worlds was wasted work
+                  const endpointId = (endpoint.match(/conversation\/([0-9a-f-]{8,})/i) || [])[1];
+                  if (endpointId && !window.location.pathname.includes(endpointId)) return;
                   const data = JSON.parse(text);
                   dispatchNetworkEvent('CONVERSATION_LOADED', {
                     endpoint,

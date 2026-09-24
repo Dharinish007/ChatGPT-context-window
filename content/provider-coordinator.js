@@ -16,6 +16,7 @@ import { ContextWidget } from './overlay-ui.js';
 import { toWidgetState } from './widget-state.js';
 import { mergeLiveTurns } from './turn-merger.js';
 import { ChatGPTDOMObserver } from './chatgpt-dom.js';
+import { invalidateText, trustTextCache } from './providers.js';
 
 const API_TTL_MS = 60000; // Saved copy stays fresh for a minute; a reply finishing re-reads it at once
 const API_BACKOFF_MS = 15000; // After a failed read, wait before trying again (Refresh skips this)
@@ -46,10 +47,13 @@ export class ProviderCoordinator {
     this.overlayUI.mount();
     this.domObserver = new ChatGPTDOMObserver({
       onChange: (event) => this.handleDOMChange(event),
-      composerSelector: this.provider.inputSelector
+      composerSelector: this.provider.inputSelector,
+      // Changed elements drop their cached text; unchanged messages are reused without re-reading
+      onMutations: (records) => { for (const r of records) invalidateText(r.target); }
     });
+    trustTextCache(true);
     this.domObserver.start();
-    this.tokenizer.getEncoder(); // Build the BPE tables while the first read is in flight
+    this.tokenizer.warm(); // Build the BPE tables while the first read is in flight
     if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
       chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request?.type !== 'TOGGLE_OVERLAY') return false;

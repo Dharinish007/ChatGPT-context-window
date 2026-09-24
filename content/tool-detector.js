@@ -10,6 +10,29 @@
  * remains classified as UNKNOWN.
  */
 
+// One selector group per tool type (same selectors as before, now read in a single page query)
+const TOOL_GROUPS = [
+  "button[aria-label*='Searched'], div[class*='search-pill'], [data-testid='web-search-citations']",
+  "div[data-testid='code-execution'], button[aria-label*='Ran Python'], button[aria-label*='Finished analyzing']",
+  "div[data-testid='memory-updated'], button[aria-label*='Memory updated'], button[aria-label*='Memory accessed']",
+  "[data-testid='canvas-container'], button[aria-label*='Open canvas']",
+  "[data-testid='mcp-tool-pill'], [data-testid='connected-app-pill'], button[aria-label*='Used tool']"
+];
+
+/**
+ * Elements matching each selector group, in document order, from ONE page traversal instead of one per
+ * group (an element matching several groups is listed in each, exactly as separate queries did).
+ * @param {Document|Element} root
+ * @param {string[]} groups
+ * @returns {Element[][]}
+ */
+export function queryGroups(root, groups) {
+  const all = Array.from(root.querySelectorAll(groups.join(', ')) || []);
+  if (all.length === 0) return groups.map(() => []);
+  if (typeof all[0].matches !== 'function') return groups.map(g => Array.from(root.querySelectorAll(g) || []));
+  return groups.map(g => all.filter(el => el.matches(g)));
+}
+
 export class ToolDetector {
   /**
    * Scans DOM for tool indicators.
@@ -18,9 +41,9 @@ export class ToolDetector {
    */
   detect(root = document) {
     const tools = [];
+    const [searchChips, codeExecEls, memoryEls, canvasEls, appEls] = queryGroups(root, TOOL_GROUPS);
 
     // 1. Web Search
-    const searchChips = root.querySelectorAll("button[aria-label*='Searched'], div[class*='search-pill'], [data-testid='web-search-citations']");
     if (searchChips && searchChips.length > 0) {
       tools.push({
         type: 'web_search',
@@ -31,7 +54,6 @@ export class ToolDetector {
     }
 
     // 2. Python / Code Interpreter / Advanced Data Analysis
-    const codeExecEls = root.querySelectorAll("div[data-testid='code-execution'], button[aria-label*='Ran Python'], button[aria-label*='Finished analyzing']");
     if (codeExecEls && codeExecEls.length > 0) {
       tools.push({
         type: 'code_interpreter',
@@ -42,7 +64,6 @@ export class ToolDetector {
     }
 
     // 3. Memory Updates or Access
-    const memoryEls = root.querySelectorAll("div[data-testid='memory-updated'], button[aria-label*='Memory updated'], button[aria-label*='Memory accessed']");
     if (memoryEls && memoryEls.length > 0) {
       tools.push({
         type: 'memory',
@@ -53,7 +74,6 @@ export class ToolDetector {
     }
 
     // 4. Canvas / Artifacts
-    const canvasEls = root.querySelectorAll("[data-testid='canvas-container'], button[aria-label*='Open canvas']");
     if (canvasEls && canvasEls.length > 0) {
       tools.push({
         type: 'canvas',
@@ -64,7 +84,6 @@ export class ToolDetector {
     }
 
     // 5. Apps / MCP / Custom GPT Tools
-    const appEls = root.querySelectorAll("[data-testid='mcp-tool-pill'], [data-testid='connected-app-pill'], button[aria-label*='Used tool']");
     if (appEls && appEls.length > 0) {
       tools.push({
         type: 'apps_mcp',

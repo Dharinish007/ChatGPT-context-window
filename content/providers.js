@@ -12,6 +12,19 @@
 
 // element -> { raw, text }: cleaning clones the node, so unchanged elements reuse the last result
 const textCache = new WeakMap();
+// Set while a MutationObserver reports every page change through invalidateText(): cached text is
+// then trusted without re-reading the element.
+const textTrust = { enabled: false };
+
+/** Page change at `node`: drop cached text of every element containing it. */
+export function invalidateText(node) {
+  for (let el = node && (node.nodeType === 1 ? node : node.parentElement); el; el = el.parentElement) textCache.delete(el);
+}
+
+/** Trust cached text while mutations are being reported (see invalidateText). */
+export function trustTextCache(enabled) {
+  textTrust.enabled = Boolean(enabled);
+}
 
 /**
  * Visible text of a message element without UI chrome (buttons, screen-reader labels, thinking).
@@ -21,6 +34,10 @@ const textCache = new WeakMap();
  */
 export function cleanText(el, removeSelector) {
   if (!el) return '';
+  if (textTrust.enabled) {
+    const trusted = textCache.get(el);
+    if (trusted) return trusted.text;
+  }
   const count = typeof el.getElementsByTagName === 'function' ? el.getElementsByTagName('*').length : -1;
   const raw = `${count}|${el.textContent || ''}`;
   const hit = textCache.get(el);
