@@ -58,4 +58,4 @@ Every declared permission serves a single necessary purpose:
 - [x] Extension Icon (128x128 px) — `assets/icons/icon-128.png`
 - [ ] Promotional Tile (440x280 px)
 - [ ] Screenshot 1 (1280x800 px) — In-page floating context HUD docked on ChatGPT Web
-- [ ] Screenshot 2 (1280x800 px) — Extension action popup with full context breakdown
+- [ ] Screenshot 2 (1280x800 px) — In-page widget expanded with full context breakdown

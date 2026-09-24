@@ -4,7 +4,7 @@
  * Ephemeral Manifest V3 Service Worker.
  * - Enforces zero in-memory global state (persists state in chrome.storage).
  * - Manages extension toolbar badge metrics and alert colors.
- * - Handles runtime message passing between content scripts and popup.
+ * - Receives context updates from content scripts; the toolbar icon toggles the in-page widget.
  * - Sets up default configuration on installation/update.
  */
 
@@ -85,8 +85,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const tabId = sender.tab?.id;
 
-      // Update toolbar badge
-      await updateActionBadge(tabId, message.payload?.utilization);
+      // Update toolbar badge (blank while the conversation is still loading, never "0%")
+      await updateActionBadge(tabId, message.payload?.observables?.awaitingData ? null : message.payload?.utilization);
 
       // Cache latest state in session storage for the tab
       if (tabId) {
@@ -101,41 +101,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
 
-  // Handler for popup requesting current active tab state
-  if (message.type === 'GET_POPUP_STATE') {
-    (async () => {
-      try {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!activeTab || !activeTab.id) {
-          sendResponse({ success: false, error: 'No active tab' });
-          return;
-        }
-
-        // Check session storage first
-        const key = `tab_state_${activeTab.id}`;
-        // Per-tab only: the global latestContextState may belong to another ChatGPT tab
-        const stored = await chrome.storage.session.get(key);
-        const tabState = stored[key];
-
-        if (tabState) {
-          sendResponse({ success: true, state: tabState, tabId: activeTab.id });
-          return;
-        }
-
-        // If not in storage, ask the content script directly
-        chrome.tabs.sendMessage(activeTab.id, { type: 'GET_CONTEXT_DATA' }, (response) => {
-          if (chrome.runtime.lastError || !response || !response.success) {
-            sendResponse({ success: false, error: 'Content script not ready or not on ChatGPT' });
-          } else {
-            sendResponse({ success: true, state: response.data, tabId: activeTab.id });
-          }
-        });
-      } catch (err) {
-        sendResponse({ success: false, error: err.message });
-      }
-    })();
-    return true; // Keep channel open
-  }
-
   return false;
+});
+
+// 3. Toolbar icon: there is no popup (the in-page widget is the only context UI); a click shows / hides it
+chrome.action?.onClicked.addListener((tab) => {
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_OVERLAY' }).catch(() => {});
 });

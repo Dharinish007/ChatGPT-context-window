@@ -212,9 +212,10 @@ export class ConversationClient {
 
         // Cache the raw data, unless a newer request for this conversation was started meanwhile
         if (isLatest()) {
+          // Freshness counts from the response: a slow or early (prefetched) read stays reusable for the full TTL
           this.cache.set(conversationId, {
             data: rawData,
-            timestamp: now
+            timestamp: Date.now()
           });
         }
 

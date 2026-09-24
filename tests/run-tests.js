@@ -16,6 +16,7 @@ import { runLiveSourcesTests } from './unit/live-sources.test.js';
 import { runWidgetStateTests } from './unit/widget-state.test.js';
 import { runReliabilityTests } from './unit/reliability.test.js';
 import { runAccuracyTests } from './unit/accuracy.test.js';
+import { runFinalFixesTests } from './unit/final-fixes.test.js';
 
 console.log('========================================================');
 console.log('  ChatGPT Context Monitor - Production Test Suite');
@@ -108,6 +109,12 @@ console.log('');
 const r14 = await runAccuracyTests();
 totalPassed += r14.passed;
 totalFailed += r14.failed;
+console.log('');
+
+// 15. Part 1 final fixes: load delay, loading state, refresh, triggers, popup removal
+const r15 = await runFinalFixesTests();
+totalPassed += r15.passed;
+totalFailed += r15.failed;
 console.log('');
 
 const t1 = performance.now();

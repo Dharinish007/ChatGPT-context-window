@@ -34,12 +34,13 @@ export function formatModelName(slug) {
  */
 export function toWidgetState(s, opts = {}) {
   const provider = opts.provider || 'AI';
-  if (!s) {
+  // No state yet, or a saved conversation whose turns are still loading: never render "0 tokens"
+  if (!s || s.observables?.awaitingData) {
     return {
-      provider, model: 'Detecting…', modelFamily: null, plan: null,
+      provider, conversationId: s?.observables?.conversationId || null, model: 'Detecting…', modelFamily: null, plan: null,
       usedTokens: 0, contextLimit: null, remainingTokens: null, percentage: null,
       limitStatus: 'UNKNOWN', confidence: 0, confidenceLevel: 'LOW',
-      evidence: [], breakdown: [], source: '', turns: 0, warning: null, diagnostics: null, ready: false
+      evidence: [], breakdown: [], source: '', turns: 0, warning: null, diagnostics: s?.diagnostics || null, ready: false
     };
   }
 

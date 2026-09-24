@@ -54,14 +54,15 @@ function loadInterceptor(respond) {
   return { window, posted, ping };
 }
 
-function loadServiceWorker(activeTabId) {
+export function loadServiceWorker(activeTabId) {
   const store = {};
   const badges = {};
   const on = {};
   const chrome = {
     action: {
       setBadgeText: async ({ tabId, text }) => { badges[tabId] = text; },
-      setBadgeBackgroundColor: async () => {}
+      setBadgeBackgroundColor: async () => {},
+      onClicked: { addListener(fn) { on.clicked = fn; } }
     },
     runtime: {
       lastError: null,
@@ -84,12 +85,13 @@ function loadServiceWorker(activeTabId) {
       onRemoved: { addListener(fn) { on.removed = fn; } },
       onUpdated: { addListener(fn) { on.updated = fn; } },
       query: async () => [{ id: activeTabId.value }],
-      sendMessage: (id, msg, cb) => cb({ success: false })
+      sent: [],
+      sendMessage(id, msg) { this.sent.push({ id, msg }); return Promise.resolve({ success: true }); }
     }
   };
   vm.runInNewContext(serviceWorkerCode, { chrome, console });
   const send = (msg, tabId) => new Promise(resolve => on.message(msg, { tab: tabId ? { id: tabId } : undefined }, resolve));
-  return { store, badges, on, send };
+  return { store, badges, on, send, tabs: chrome.tabs };
 }
 
 export async function runReliabilityTests() {
@@ -320,10 +322,8 @@ export async function runReliabilityTests() {
       const sw = loadServiceWorker(active);
       await sw.send({ type: 'CONTEXT_UPDATED', payload: { utilization: { percentage: 10 }, tag: 'tab1' } }, 1);
       await sw.send({ type: 'CONTEXT_UPDATED', payload: { utilization: { percentage: 55 }, tag: 'tab2' } }, 2);
-      const popup2 = await sw.send({ type: 'GET_POPUP_STATE' });
-      active.value = 1;
-      const popup1 = await sw.send({ type: 'GET_POPUP_STATE' });
-      assert('Tab B update never overwrites tab A (popup per tab)', popup1.state?.tag === 'tab1' && popup2.state?.tag === 'tab2');
+      // The popup is gone; per-tab isolation is checked on the stored state itself
+      assert('Tab B update never overwrites tab A (state per tab)', sw.store.tab_state_1?.tag === 'tab1' && sw.store.tab_state_2?.tag === 'tab2');
       assert('Badge is set per tab', sw.badges[1] === '10%' && sw.badges[2] === '55%');
 
       sw.on.removed(1);

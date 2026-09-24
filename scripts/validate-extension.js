@@ -40,8 +40,8 @@ assert(manifest.background?.service_worker, 'MV3 background.service_worker decla
 const swPath = path.join(rootDir, manifest.background.service_worker);
 assert(fs.existsSync(swPath), `Service worker file exists: ${manifest.background.service_worker}`);
 
-const popupPath = path.join(rootDir, manifest.action.default_popup);
-assert(fs.existsSync(popupPath), `Popup HTML file exists: ${manifest.action.default_popup}`);
+// The in-page widget is the only context UI; the toolbar icon toggles it instead of opening a popup
+assert(manifest.action && !manifest.action.default_popup, 'No duplicate popup UI (action has no default_popup)');
 
 for (const [size, iconRelPath] of Object.entries(manifest.icons)) {
   const iconPath = path.join(rootDir, iconRelPath);

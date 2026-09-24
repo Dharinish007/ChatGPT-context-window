@@ -39,7 +39,7 @@ ChatGPT Web Page
          └── Web Search / Python / Memory            ▼
                                              ┌─────────────────────────────────┐
                                              │ Floating HUD (overlay-ui.js)    │
-                                             │ Action Popup (popup.html)       │
+                                             │ Toolbar icon: show / hide HUD   │
                                              │ Toolbar Badge (service-worker)  │
                                              └─────────────────────────────────┘
 ```
@@ -61,7 +61,7 @@ ChatGPT Web Page
 | **Memory Updates** | ✅ Completed | `OBSERVED` / `UNKNOWN` | Memory references observed; vector tokens marked UNKNOWN |
 | **System / Dev Prompts**| ✅ Completed | `UNKNOWN` | Explicitly marked unexposed; never fabricated |
 | **In-Page Floating HUD**| ✅ Completed | `ESTIMATED` | Non-intrusive Shadow DOM overlay with mini popover |
-| **Action Popup** | ✅ Completed | `ESTIMATED` | High-density dashboard with full audit breakdown |
+| **Refresh Button** | ✅ Completed | `OBSERVED` | Re-reads the current conversation on demand; the old action popup was removed (toolbar icon now shows / hides the HUD) |
 | **Toolbar Badge** | ✅ Completed | `ESTIMATED` | Displays percentage utilization (`24%`) with alert colors |
 
 ---

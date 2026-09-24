@@ -32,7 +32,8 @@ export class ContentScriptCoordinator {
     // UI adapter: the only ChatGPT-specific UI knowledge is the name and where the input is
     this.overlayUI = new ContextWidget({
       provider: 'ChatGPT',
-      findInput: () => document.querySelector('#prompt-textarea') || document.querySelector('form textarea')
+      findInput: () => document.querySelector('#prompt-textarea') || document.querySelector('form textarea'),
+      onRefresh: () => this.refresh()
     });
     this.domObserver = null;
     this.latestState = null;
@@ -51,6 +52,21 @@ export class ContentScriptCoordinator {
   }
 
   /**
+   * Starts the network reads at document_start, while the page itself is still loading, instead
+   * of after it (document_idle + session + conversation round trips was most of the initial delay).
+   * Needs no DOM; the first analysis pass in init() reuses the in-flight or cached results.
+   */
+  prefetch() {
+    this.requestObserver.start();
+    const conversationId = this.conversationClient.extractConversationId();
+    if (conversationId) {
+      this.conversationClient.fetchConversation(conversationId); // Reads the session first
+    } else {
+      this.conversationClient.getSession();
+    }
+  }
+
+  /**
    * Initializes the content monitor.
    */
   init() {
@@ -65,19 +81,16 @@ export class ContentScriptCoordinator {
     });
     this.domObserver.start();
 
-    // Start Network Intelligence observer (Group C)
+    // Start Network Intelligence observer (Group C); no-op if prefetch() already started it
     this.requestObserver.start();
 
-    // Listen for requests from extension action popup or background service worker
+    // Build the BPE encoder (~0.5-2s of CPU) while the first pass waits on the network,
+    // not after the response arrives
+    this.tokenizer.getEncoder();
+
+    // Toolbar icon click (background service worker) shows / hides the widget
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
       chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request && request.type === 'GET_CONTEXT_DATA') {
-          sendResponse({
-            success: true,
-            data: this.latestState
-          });
-          return true; // Keep channel open
-        }
         if (request && request.type === 'TOGGLE_OVERLAY') {
           this.overlayUI.isVisible = !this.overlayUI.isVisible;
           this.overlayUI.render();
@@ -140,6 +153,21 @@ export class ContentScriptCoordinator {
   }
 
   /**
+   * Refresh button: re-reads the current conversation now, bypassing the short cache and the
+   * failure back-off, then recomputes from the fresh copy plus the current page.
+   */
+  async refresh() {
+    const conversationId = this.resolveConversationId();
+    if (!this.conversationClient.session?.ok) {
+      await this.conversationClient.getSession({ force: true }); // Retry a failed session read too
+    }
+    if (conversationId) {
+      await this.conversationClient.fetchConversation(conversationId, { force: true });
+    }
+    await this.handleDOMChange({ isRefresh: true });
+  }
+
+  /**
    * Which conversation is on screen. The URL is the source of truth; without an id in the URL
    * (new chat) the network id is used, but only one adopted on this page: leaving /c/<id> for a
    * new chat drops the previous conversation's network state so nothing carries over.
@@ -176,6 +204,13 @@ export class ContentScriptCoordinator {
       const conversationId = this.resolveConversationId();
       const isNewConversation = conversationId !== this.activeConversationId;
 
+      // Opening another saved conversation: the previous numbers no longer apply, so show the loading
+      // state until this one is read. (A new chat receiving its id from its own stream is the same
+      // conversation and keeps its live counts.)
+      if (isNewConversation && conversationId && conversationId !== this.requestObserver.getActiveConversationId()) {
+        this.overlayUI.update(toWidgetState(null, { provider: 'ChatGPT' }));
+      }
+
       if (event.isNavigation || isNewConversation) {
         this.tokenizer.clearCache();
         if (isNewConversation) {
@@ -205,12 +240,14 @@ export class ContentScriptCoordinator {
       let apiError = null;
       let authMessagesCount = null;
       let normalized = null;
+      let authStatus = null;
 
       // Session gives the bearer token for the API and the account plan (cached, cheap to call)
       const session = await this.conversationClient.getSession();
 
       if (conversationId) {
         const authResult = await this.conversationClient.fetchConversation(conversationId);
+        authStatus = authResult.status ?? null;
         if (authResult.fromCapture) {
           apiError = `Direct fetch failed (${authResult.fetchError}); using the page's own conversation response`;
         }
@@ -261,6 +298,10 @@ export class ContentScriptCoordinator {
         conversationId,
         baseIsFinal: dataSource === 'authoritative'
       });
+
+      // A saved conversation always has turns. None from any source (API pending or failed, page not
+      // rendered yet) means it is still loading, not empty: "0 tokens" would be wrong. A 404 is final.
+      const awaitingData = Boolean(conversationId) && effectiveMessages.length === 0 && authStatus !== 404;
 
       const encoding = model?.encoding || 'o200k_base';
 
@@ -459,6 +500,7 @@ export class ContentScriptCoordinator {
       contextState.observables.network = networkHealth;
       contextState.observables.plan = winningPlan;
       contextState.observables.hiddenMessagesExcluded = normalized?.hiddenMessages || 0;
+      contextState.observables.awaitingData = awaitingData;
       // Measured tokens are a lower bound when turns may be missing (API unavailable for an existing
       // conversation). Hidden system/memory context is never measured, so it is always excluded.
       contextState.completeness.isLowerBound = !conversationComplete;
@@ -505,6 +547,10 @@ export class ContentScriptCoordinator {
 
       // A newer pass started while this one awaited the API; its result wins
       if (runSeq !== this._runSeq) return;
+
+      // Time from page navigation to the first real numbers, for measuring load delay on the live site
+      if (!awaitingData && this._firstDataAtMs === undefined) this._firstDataAtMs = Math.round(performance.now());
+      contextState.diagnostics.firstDataAtMs = this._firstDataAtMs ?? null;
 
       this.latestState = contextState;
 

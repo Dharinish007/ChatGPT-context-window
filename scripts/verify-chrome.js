@@ -216,6 +216,7 @@ async function main() {
         sendMessage: (msg) => {
           if (msg && msg.type === 'CONTEXT_UPDATED') {
             window.__latestStoredState = { latestContextState: msg.payload };
+            window.__updates = (window.__updates || 0) + 1;
           }
           return Promise.resolve({ success: true });
         },
@@ -338,6 +339,53 @@ async function main() {
     } else {
       console.error('❌ [FAIL] HUD not rendered or missing content in page DOM');
       success = false;
+    }
+
+    console.log('\n--- Test 4: Widget Layout, Confidence Dropdown & Refresh ---');
+    await delay(400); // Let pending passes settle so only the refresh click produces an update
+    const layoutCheck = await client.send('Runtime.evaluate', {
+      expression: `
+        (async () => {
+          const sr = document.getElementById('chatgpt-context-monitor-host').shadowRoot;
+          sr.querySelector('.toggle.chev').click(); // expand
+          const sections = [...sr.querySelectorAll('.details > .section')];
+          const titles = sections.map(s => (s.querySelector('summary > span') || s.querySelector('.h')).textContent.trim());
+          const conf = sr.querySelector('details.conf');
+          const confClosedByDefault = conf ? !conf.open : false;
+          conf?.querySelector('summary').click();
+          const confOpensOnClick = conf ? conf.open : false;
+          const breakdownRows = [...sections[0].querySelectorAll('.row .k')].map(k => k.textContent);
+          const before = window.__updates || 0;
+          sr.querySelector('.refresh').click();
+          await new Promise(r => setTimeout(r, 300));
+          return {
+            titles,
+            confClosedByDefault,
+            confOpensOnClick,
+            percentInDetails: sr.querySelectorAll('.details .pct, .details .progress').length,
+            percentShown: sr.querySelectorAll('.pct').length,
+            breakdownRows,
+            refreshUpdated: (window.__updates || 0) > before,
+            refreshIdle: !sr.querySelector('.refresh').disabled
+          };
+        })()
+      `,
+      awaitPromise: true,
+      returnByValue: true
+    });
+    const layout = layoutCheck.result?.value || {};
+    console.log('[Chrome] Widget layout:', JSON.stringify(layout, null, 2));
+    const checks = [
+      ['Breakdown at the top, Model at the bottom', JSON.stringify(layout.titles) === JSON.stringify(['Breakdown', 'Confidence', 'Diagnostics', 'Model'])],
+      ['Confidence is a dropdown, closed by default', layout.confClosedByDefault === true],
+      ['Confidence opens when clicked', layout.confOpensOnClick === true],
+      ['Percentage/progress shown once (summary only, not repeated in details)', layout.percentInDetails === 0 && layout.percentShown === 1],
+      ['Breakdown keeps used / remaining / window', ['Used', 'Remaining', 'Window'].every(k => layout.breakdownRows?.includes(k))],
+      ['Refresh button re-reads and updates the state immediately', layout.refreshUpdated === true && layout.refreshIdle === true]
+    ];
+    for (const [name, ok] of checks) {
+      if (ok) console.log(`✅ [PASS] ${name}`);
+      else { console.error(`❌ [FAIL] ${name}`); success = false; }
     }
 
     client.close();

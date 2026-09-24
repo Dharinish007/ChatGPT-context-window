@@ -2982,9 +2982,10 @@ class ConversationClient {
 
         // Cache the raw data, unless a newer request for this conversation was started meanwhile
         if (isLatest()) {
+          // Freshness counts from the response: a slow or early (prefetched) read stays reusable for the full TTL
           this.cache.set(conversationId, {
             data: rawData,
-            timestamp: now
+            timestamp: Date.now()
           });
         }
 
@@ -4231,12 +4232,13 @@ function formatModelName(slug) {
  */
 function toWidgetState(s, opts = {}) {
   const provider = opts.provider || 'AI';
-  if (!s) {
+  // No state yet, or a saved conversation whose turns are still loading: never render "0 tokens"
+  if (!s || s.observables?.awaitingData) {
     return {
-      provider, model: 'Detecting…', modelFamily: null, plan: null,
+      provider, conversationId: s?.observables?.conversationId || null, model: 'Detecting…', modelFamily: null, plan: null,
       usedTokens: 0, contextLimit: null, remainingTokens: null, percentage: null,
       limitStatus: 'UNKNOWN', confidence: 0, confidenceLevel: 'LOW',
-      evidence: [], breakdown: [], source: '', turns: 0, warning: null, diagnostics: null, ready: false
+      evidence: [], breakdown: [], source: '', turns: 0, warning: null, diagnostics: s?.diagnostics || null, ready: false
     };
   }
 
@@ -4306,12 +4308,15 @@ function toWidgetState(s, opts = {}) {
  * Context Monitor - Context Widget (provider-neutral UI)
  *
  * Renders the normalized view state from widget-state.js (toWidgetState). It knows nothing about
- * any AI site: a provider adapter supplies `findInput()` (the chat input element) and a name.
+ * any AI site: a provider adapter supplies `findInput()` (the chat input element), a name, and
+ * `onRefresh()` (re-read the conversation now; may return a promise).
  *
  * Components (each builds its DOM once and exposes update(vm), so updates only change text:
  * no flicker, no lost expand state, and page-derived strings never become HTML):
- *   ContextSummary  - collapsed card: percentage, ConfidenceBadge, toggle, UsageProgress, used/total, ModelInfo
- *   ContextDetails  - expanded sections: context, model, breakdown, confidence + EvidenceList, diagnostics
+ *   ContextSummary  - collapsed card: percentage, ConfidenceBadge, refresh, toggle, UsageProgress, used/total, ModelInfo
+ *   ContextDetails  - expanded sections, top to bottom: breakdown (+ used/remaining/window),
+ *                     confidence dropdown (closed by default) + EvidenceList, diagnostics, model
+ * The percentage and progress bar live only in the summary card.
  */
 
 const STYLES = `
@@ -4352,9 +4357,11 @@ const STYLES = `
   }
   .toggle:hover { background: var(--track); color: var(--text); }
   .toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
-  .open .toggle { transform: rotate(180deg); }
+  .toggle:disabled { cursor: default; opacity: .6; }
+  .open .toggle.chev { transform: rotate(180deg); }
+  .refreshing svg { animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .progress { height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; margin: 8px 0 7px; }
-  .progress.lg { height: 8px; margin: 8px 0; }
   .progress b { display: block; height: 100%; width: 0; border-radius: inherit;
     background: linear-gradient(90deg, var(--primary), var(--accent)); transition: width .3s ease; }
   .progress.warn b { background: var(--warn); } .progress.bad b { background: var(--bad); }
@@ -4366,10 +4373,13 @@ const STYLES = `
     padding: 2px; margin: -2px; }
   .open .details { display: flex; }
   .section { padding: 10px 12px; }
-  .section.hero { border-color: color-mix(in srgb, var(--primary) 35%, var(--line)); }
   .h { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-  .hero .big { font-size: 22px; font-weight: 700; color: var(--primary); }
-  .hero .big small { font-size: 11px; letter-spacing: .08em; color: var(--muted); margin-left: 4px; }
+  .divider { border-top: 1px solid var(--line); margin: 6px 0; }
+  .conf > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0; }
+  .conf > summary::-webkit-details-marker { display: none; }
+  .conf > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+  .conf > summary svg { margin-left: auto; color: var(--muted); transition: transform .15s ease; }
+  .conf[open] > summary svg { transform: rotate(180deg); }
   .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 2px 0; }
   .row .k { color: var(--muted); white-space: nowrap; }
   .row .v { text-align: right; min-width: 0; overflow-wrap: anywhere; }
@@ -4403,9 +4413,32 @@ function h(tag, cls, parent, text) {
   return n;
 }
 
+/** Stroked 16x16 SVG icon from one path. */
+function icon(parent, d) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', d);
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '1.75');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(path);
+  parent.appendChild(svg);
+  return svg;
+}
+const CHEVRON_UP = 'M4 10l4-4 4 4';
+const CHEVRON_DOWN = 'M4 6l4 4 4-4';
+const REFRESH = 'M13 8a5 5 0 1 1-1.5-3.55M13 2.5v3h-3';
+
 /** Progress bar; tone switches to warn/bad near the limit. */
-function UsageProgress(parent, large = false) {
-  const el = h('div', `progress${large ? ' lg' : ''}`, parent);
+function UsageProgress(parent) {
+  const el = h('div', 'progress', parent);
   el.setAttribute('role', 'progressbar');
   el.setAttribute('aria-valuemin', '0');
   el.setAttribute('aria-valuemax', '100');
@@ -4431,6 +4464,7 @@ function ConfidenceBadge(parent, withScore = false) {
   const label = h('span', null, el);
   return {
     update(vm) {
+      el.style.display = vm.ready === false ? 'none' : ''; // No confidence claim before there is data
       el.className = `badge ${vm.confidenceLevel}`;
       label.textContent = withScore ? `${vm.confidence}% ${vm.confidenceLevel}` : vm.confidenceLevel;
       el.title = `Measurement confidence ${vm.confidence}%`;
@@ -4449,28 +4483,34 @@ function ModelInfo(parent, withPlan = false) {
   };
 }
 
-function ContextSummary(parent, onToggle) {
+function ContextSummary(parent, onToggle, onRefresh) {
   const el = h('div', 'card summary', parent);
   const top = h('div', 'top', el);
   const pct = h('span', 'pct', top);
   const confidence = ConfidenceBadge(top);
   h('span', 'spacer', top);
-  const toggle = h('button', 'toggle', top);
-  // Chevron-up (details open upward); rotates 180° when open
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 16 16');
-  svg.setAttribute('width', '14');
-  svg.setAttribute('height', '14');
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', 'M4 10l4-4 4 4');
-  path.setAttribute('fill', 'none');
-  path.setAttribute('stroke', 'currentColor');
-  path.setAttribute('stroke-width', '1.75');
-  path.setAttribute('stroke-linecap', 'round');
-  path.setAttribute('stroke-linejoin', 'round');
-  svg.appendChild(path);
-  toggle.appendChild(svg);
+
+  // Refresh: re-reads the conversation now; spins and is disabled until the pass finishes
+  const refresh = h('button', 'toggle refresh', top);
+  icon(refresh, REFRESH);
+  refresh.setAttribute('aria-label', 'Refresh context data');
+  refresh.title = 'Refresh';
+  refresh.addEventListener('click', async () => {
+    if (refresh.disabled) return;
+    refresh.disabled = true;
+    refresh.classList.add('refreshing');
+    try {
+      await onRefresh();
+    } catch (_) {
+      // The next automatic pass still updates the widget
+    } finally {
+      refresh.disabled = false;
+      refresh.classList.remove('refreshing');
+    }
+  });
+
+  const toggle = h('button', 'toggle chev', top);
+  icon(toggle, CHEVRON_UP); // Details open upward; rotates 180° when open
   toggle.setAttribute('aria-label', 'Show context details');
   toggle.setAttribute('aria-expanded', 'false');
   toggle.addEventListener('click', onToggle);
@@ -4520,8 +4560,8 @@ function EvidenceList(parent) {
 
 function ContextDetails(parent, getDiagnostics) {
   const el = h('div', 'details', parent);
-  const section = (title, hero = false) => {
-    const s = h('section', `card section${hero ? ' hero' : ''}`, el);
+  const section = (title) => {
+    const s = h('section', 'card section', el);
     h('div', 'h', s, title);
     return s;
   };
@@ -4535,29 +4575,21 @@ function ContextDetails(parent, getDiagnostics) {
     if (tag) h('span', `tag ${tag}`, node, tag);
   };
 
-  // Context (primary)
-  const ctx = section('Context', true);
-  const big = h('div', 'big', ctx);
-  const progress = UsageProgress(ctx, true);
-  const usedRow = rowIn(ctx, 'Used');
-  const limitRow = rowIn(ctx, 'Window');
-  const leftRow = rowIn(ctx, 'Remaining');
-
-  // Model
-  const mdl = section('Model');
-  const providerRow = rowIn(mdl, 'Provider');
-  const modelRow = rowIn(mdl, 'Model');
-  const planRow = rowIn(mdl, 'Plan');
-  const sourceRow = rowIn(mdl, 'Source');
-  const turnsRow = rowIn(mdl, 'Turns');
-
-  // Breakdown
+  // Breakdown (top): what the used tokens are made of, then the exact totals.
+  // The percentage and bar are in the summary card only, so they are not repeated here.
   const brk = section('Breakdown');
   const brkRows = h('div', null, brk);
+  h('div', 'divider', brk);
+  const usedRow = rowIn(brk, 'Used');
+  const leftRow = rowIn(brk, 'Remaining');
+  const limitRow = rowIn(brk, 'Window');
 
-  // Confidence
-  const conf = section('Confidence');
-  const badge = ConfidenceBadge(conf, true);
+  // Confidence: native dropdown, closed by default; open state survives updates (DOM is built once)
+  const conf = h('details', 'card section conf', el);
+  const confHead = h('summary', 'h', conf);
+  h('span', null, confHead, 'Confidence');
+  const badge = ConfidenceBadge(confHead, true);
+  icon(confHead, CHEVRON_DOWN);
   const evidence = EvidenceList(conf);
 
   // Diagnostics
@@ -4575,27 +4607,28 @@ function ContextDetails(parent, getDiagnostics) {
     setTimeout(() => { copy.textContent = 'Copy diagnostics'; }, 1500);
   });
 
+  // Model (bottom)
+  const mdl = section('Model');
+  const providerRow = rowIn(mdl, 'Provider');
+  const modelRow = rowIn(mdl, 'Model');
+  const planRow = rowIn(mdl, 'Plan');
+  const sourceRow = rowIn(mdl, 'Source');
+  const turnsRow = rowIn(mdl, 'Turns');
+
   return {
     el,
     update(vm) {
-      big.textContent = '';
-      if (vm.percentage === null) {
-        big.append(`${vm.usedTokens.toLocaleString()}`);
-        h('small', null, big, 'TOKENS');
-      } else {
-        big.append(`${fmtPct(vm.percentage, vm.usedTokens)}%`);
-        h('small', null, big, 'USED');
-      }
-      progress.update(vm);
-      usedRow.textContent = `${vm.usedTokens.toLocaleString()} tokens`;
+      // While loading, show dashes rather than zeros
+      const tokens = (n) => (vm.ready === false || n === null ? '—' : `${n.toLocaleString()} tokens`);
+      usedRow.textContent = tokens(vm.usedTokens);
+      leftRow.textContent = tokens(vm.remainingTokens);
       tagged(limitRow, vm.contextLimit ? `${vm.contextLimit.toLocaleString()} tokens` : 'Unknown', vm.limitStatus);
-      leftRow.textContent = vm.remainingTokens === null ? '—' : `${vm.remainingTokens.toLocaleString()} tokens`;
 
       providerRow.textContent = vm.provider;
       modelRow.textContent = [vm.model, vm.modelFamily].filter(Boolean).join(' · ');
       planRow.textContent = vm.plan || 'Unknown';
-      sourceRow.textContent = vm.source;
-      turnsRow.textContent = String(vm.turns);
+      sourceRow.textContent = vm.source || '—';
+      turnsRow.textContent = vm.ready === false ? '—' : String(vm.turns);
 
       brkRows.textContent = '';
       for (const b of vm.breakdown) tagged(rowIn(brkRows, b.label), b.value, b.tag);
@@ -4611,11 +4644,11 @@ function ContextDetails(parent, getDiagnostics) {
 
 class ContextWidget {
   /**
-   * @param {{ provider?: string, findInput?: () => Element|null }} [adapter]
-   *   Provider adapter: display name and a way to find the chat input. Nothing else is site-specific.
+   * @param {{ provider?: string, findInput?: () => Element|null, onRefresh?: () => any }} [adapter]
+   *   Provider adapter: display name, a way to find the chat input, and a refresh action. Nothing else is site-specific.
    */
   constructor(adapter = {}) {
-    this.adapter = { provider: adapter.provider || 'AI', findInput: adapter.findInput || (() => null) };
+    this.adapter = { provider: adapter.provider || 'AI', findInput: adapter.findInput || (() => null), onRefresh: adapter.onRefresh || (() => {}) };
     this.hostElement = null;
     this.shadowRoot = null;
     this.isExpanded = false;
@@ -4639,7 +4672,7 @@ class ContextWidget {
     const summary = ContextSummary(root, () => {
       this.isExpanded = !this.isExpanded;
       this.render();
-    });
+    }, () => this.adapter.onRefresh());
     this.parts = { root, details, summary };
 
     (document.body || document.documentElement).appendChild(this.hostElement);
@@ -4767,8 +4800,12 @@ class ChatGPTDOMObserver {
   constructor(options = {}) {
     this.onChange = options.onChange || (() => {});
     this.debounceMs = options.debounceMs || 120;
+    // Upper bound on how long a burst of mutations can postpone an update. Without it, a page that
+    // never stops mutating (initial render, animations) kept pushing the trailing debounce back.
+    this.maxWaitMs = options.maxWaitMs || 400;
     this.observer = null;
     this.debounceTimer = null;
+    this._pendingSince = 0;
     this.lastUrl = typeof window !== 'undefined' ? window.location.href : '';
     this.isStreaming = false;
   }
@@ -4808,6 +4845,10 @@ class ChatGPTDOMObserver {
     // Also monitor URL/SPA navigation changes
     window.addEventListener('popstate', () => this.handleNavigation());
     this.pollUrlChange();
+    // Background tabs throttle timers (up to once a minute); re-read as soon as the tab is shown again
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') this.triggerUpdate();
+    });
 
     // Initial trigger
     this.triggerUpdate();
@@ -4825,10 +4866,15 @@ class ChatGPTDOMObserver {
       clearTimeout(this.debounceTimer);
     }
 
-    // Faster updates (80ms) during active streaming; normal 120ms when stationary
-    const delay = streamingNow ? 80 : this.debounceMs;
+    // Faster updates (80ms) during active streaming; normal 120ms when stationary,
+    // but never later than maxWaitMs after the first unhandled mutation
+    const now = Date.now();
+    if (!this._pendingSince) this._pendingSince = now;
+    const delay = Math.max(0, Math.min(streamingNow ? 80 : this.debounceMs, this._pendingSince + this.maxWaitMs - now));
 
     this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      this._pendingSince = 0;
       this.triggerUpdate();
     }, delay);
   }
@@ -4999,7 +5045,8 @@ class ContentScriptCoordinator {
     // UI adapter: the only ChatGPT-specific UI knowledge is the name and where the input is
     this.overlayUI = new ContextWidget({
       provider: 'ChatGPT',
-      findInput: () => document.querySelector('#prompt-textarea') || document.querySelector('form textarea')
+      findInput: () => document.querySelector('#prompt-textarea') || document.querySelector('form textarea'),
+      onRefresh: () => this.refresh()
     });
     this.domObserver = null;
     this.latestState = null;
@@ -5018,6 +5065,21 @@ class ContentScriptCoordinator {
   }
 
   /**
+   * Starts the network reads at document_start, while the page itself is still loading, instead
+   * of after it (document_idle + session + conversation round trips was most of the initial delay).
+   * Needs no DOM; the first analysis pass in init() reuses the in-flight or cached results.
+   */
+  prefetch() {
+    this.requestObserver.start();
+    const conversationId = this.conversationClient.extractConversationId();
+    if (conversationId) {
+      this.conversationClient.fetchConversation(conversationId); // Reads the session first
+    } else {
+      this.conversationClient.getSession();
+    }
+  }
+
+  /**
    * Initializes the content monitor.
    */
   init() {
@@ -5032,19 +5094,16 @@ class ContentScriptCoordinator {
     });
     this.domObserver.start();
 
-    // Start Network Intelligence observer (Group C)
+    // Start Network Intelligence observer (Group C); no-op if prefetch() already started it
     this.requestObserver.start();
 
-    // Listen for requests from extension action popup or background service worker
+    // Build the BPE encoder (~0.5-2s of CPU) while the first pass waits on the network,
+    // not after the response arrives
+    this.tokenizer.getEncoder();
+
+    // Toolbar icon click (background service worker) shows / hides the widget
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
       chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request && request.type === 'GET_CONTEXT_DATA') {
-          sendResponse({
-            success: true,
-            data: this.latestState
-          });
-          return true; // Keep channel open
-        }
         if (request && request.type === 'TOGGLE_OVERLAY') {
           this.overlayUI.isVisible = !this.overlayUI.isVisible;
           this.overlayUI.render();
@@ -5107,6 +5166,21 @@ class ContentScriptCoordinator {
   }
 
   /**
+   * Refresh button: re-reads the current conversation now, bypassing the short cache and the
+   * failure back-off, then recomputes from the fresh copy plus the current page.
+   */
+  async refresh() {
+    const conversationId = this.resolveConversationId();
+    if (!this.conversationClient.session?.ok) {
+      await this.conversationClient.getSession({ force: true }); // Retry a failed session read too
+    }
+    if (conversationId) {
+      await this.conversationClient.fetchConversation(conversationId, { force: true });
+    }
+    await this.handleDOMChange({ isRefresh: true });
+  }
+
+  /**
    * Which conversation is on screen. The URL is the source of truth; without an id in the URL
    * (new chat) the network id is used, but only one adopted on this page: leaving /c/<id> for a
    * new chat drops the previous conversation's network state so nothing carries over.
@@ -5143,6 +5217,13 @@ class ContentScriptCoordinator {
       const conversationId = this.resolveConversationId();
       const isNewConversation = conversationId !== this.activeConversationId;
 
+      // Opening another saved conversation: the previous numbers no longer apply, so show the loading
+      // state until this one is read. (A new chat receiving its id from its own stream is the same
+      // conversation and keeps its live counts.)
+      if (isNewConversation && conversationId && conversationId !== this.requestObserver.getActiveConversationId()) {
+        this.overlayUI.update(toWidgetState(null, { provider: 'ChatGPT' }));
+      }
+
       if (event.isNavigation || isNewConversation) {
         this.tokenizer.clearCache();
         if (isNewConversation) {
@@ -5172,12 +5253,14 @@ class ContentScriptCoordinator {
       let apiError = null;
       let authMessagesCount = null;
       let normalized = null;
+      let authStatus = null;
 
       // Session gives the bearer token for the API and the account plan (cached, cheap to call)
       const session = await this.conversationClient.getSession();
 
       if (conversationId) {
         const authResult = await this.conversationClient.fetchConversation(conversationId);
+        authStatus = authResult.status ?? null;
         if (authResult.fromCapture) {
           apiError = `Direct fetch failed (${authResult.fetchError}); using the page's own conversation response`;
         }
@@ -5228,6 +5311,10 @@ class ContentScriptCoordinator {
         conversationId,
         baseIsFinal: dataSource === 'authoritative'
       });
+
+      // A saved conversation always has turns. None from any source (API pending or failed, page not
+      // rendered yet) means it is still loading, not empty: "0 tokens" would be wrong. A 404 is final.
+      const awaitingData = Boolean(conversationId) && effectiveMessages.length === 0 && authStatus !== 404;
 
       const encoding = model?.encoding || 'o200k_base';
 
@@ -5426,6 +5513,7 @@ class ContentScriptCoordinator {
       contextState.observables.network = networkHealth;
       contextState.observables.plan = winningPlan;
       contextState.observables.hiddenMessagesExcluded = normalized?.hiddenMessages || 0;
+      contextState.observables.awaitingData = awaitingData;
       // Measured tokens are a lower bound when turns may be missing (API unavailable for an existing
       // conversation). Hidden system/memory context is never measured, so it is always excluded.
       contextState.completeness.isLowerBound = !conversationComplete;
@@ -5473,6 +5561,10 @@ class ContentScriptCoordinator {
       // A newer pass started while this one awaited the API; its result wins
       if (runSeq !== this._runSeq) return;
 
+      // Time from page navigation to the first real numbers, for measuring load delay on the live site
+      if (!awaitingData && this._firstDataAtMs === undefined) this._firstDataAtMs = Math.round(performance.now());
+      contextState.diagnostics.firstDataAtMs = this._firstDataAtMs ?? null;
+
       this.latestState = contextState;
 
       // 10. Update in-page floating HUD
@@ -5506,9 +5598,11 @@ class ContentScriptCoordinator {
 }
 
 
-  // Auto-initialize when loaded on ChatGPT Web
+  // Auto-initialize when loaded on ChatGPT Web. Injected at document_start: the network reads start
+  // now, in parallel with the page's own loading; the widget and DOM observer wait for the DOM.
   try {
     const coordinator = new ContentScriptCoordinator(MODEL_LIMITS_DB);
+    coordinator.prefetch();
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => coordinator.init());
     } else {

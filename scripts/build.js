@@ -132,9 +132,11 @@ const bundledContentScript = `/**
 
   ${contentMainCode}
 
-  // Auto-initialize when loaded on ChatGPT Web
+  // Auto-initialize when loaded on ChatGPT Web. Injected at document_start: the network reads start
+  // now, in parallel with the page's own loading; the widget and DOM observer wait for the DOM.
   try {
     const coordinator = new ContentScriptCoordinator(MODEL_LIMITS_DB);
+    coordinator.prefetch();
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => coordinator.init());
     } else {
